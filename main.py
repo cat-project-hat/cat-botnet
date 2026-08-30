@@ -686,7 +686,9 @@ class Builder:
             cprint(f"\n  [!] Manquant : {', '.join(missing)}", C.RED)
             cinput("  > Entrée..."); return
 
-        if not shutil.which('go'):
+        # Vérifie Go (cherche d'abord dans /usr/local/go/bin)
+        _go_check = Path('/usr/local/go/bin/go').exists() or shutil.which('go') is not None
+        if not _go_check:
             cprint("  [!] Go non installé. Utilise le menu 'Installer dépendances'.", C.RED)
             cinput("  > Entrée..."); return
 
@@ -1782,7 +1784,8 @@ class Builder:
         cprint(f"\n  {C.YELLOW}── Outils système ──{C.RESET}")
         check("zmap installé",  bool(shutil.which('zmap')),  shutil.which('zmap') or 'apt install zmap')
         check("screen installé", bool(shutil.which('screen')), shutil.which('screen') or 'apt install screen')
-        check("go installé",    bool(shutil.which('go')),    shutil.which('go') or 'apt install golang')
+        _go_path = '/usr/local/go/bin/go' if Path('/usr/local/go/bin/go').exists() else (shutil.which('go') or None)
+        check("go installé",    bool(_go_path),    _go_path or 'apt install golang')
         # Droits sudo pour zmap
         r = subprocess.run(['sudo', '-n', 'true'], capture_output=True)
         check("sudo sans mot de passe (zmap)", r.returncode == 0, "zmap nécessite root")
