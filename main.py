@@ -808,10 +808,17 @@ class Builder:
         Path(LEGACY_DIR).mkdir(parents=True, exist_ok=True)
         cprint(f"\n  [*] Compilation des bots Discord → {BUILD_DIR}/ et {LEGACY_DIR}/...\n", C.YELLOW)
         built_bots: list[tuple[str, str]] = []  # (arch_key, out_name)
+
+        # Assure que garble trouve Go 1.26+
+        _base_env = os.environ.copy()
+        _go_bin_dir = '/usr/local/go/bin'
+        if _go_bin_dir not in _base_env.get('PATH', ''):
+            _base_env['PATH'] = _go_bin_dir + os.pathsep + _base_env.get('PATH', '')
+
         for attr, label, goos, goarch, extra_env, out_name in ARCHS:
             if not getattr(self.cfg, attr):
                 continue
-            env_vars = os.environ.copy()
+            env_vars = _base_env.copy()
             env_vars['GOOS']        = goos
             env_vars['GOARCH']      = goarch
             env_vars['CGO_ENABLED'] = '0'
@@ -862,7 +869,7 @@ class Builder:
             for goos, goarch, extra, out, attr, ldfvar in legacy_targets:
                 if not getattr(self.cfg, attr, False):
                     continue
-                env_vars = os.environ.copy()
+                env_vars = _base_env.copy()
                 env_vars['GOOS'] = goos; env_vars['GOARCH'] = goarch; env_vars['CGO_ENABLED'] = '0'
                 env_vars.update(extra)
                 cmd = [go116, 'build', f'-ldflags={ldflags_common}'] + _trimpath_flag + ['-o', out, 'bot_discord.go']
