@@ -809,6 +809,13 @@ class Builder:
         cprint(f"\n  [*] Compilation des bots Discord → {BUILD_DIR}/ et {LEGACY_DIR}/...\n", C.YELLOW)
         built_bots: list[tuple[str, str]] = []  # (arch_key, out_name)
 
+        # Debug: affiche les architectures sélectionnées
+        selected = [label for attr, label, _, _, _, _ in ARCHS if getattr(self.cfg, attr, False)]
+        if not selected:
+            cprint(f"  [!] AUCUNE architecture sélectionnée! Utilise le menu 2 pour en choisir.", C.RED)
+            cinput("  > Entrée..."); return
+        cprint(f"  [*] Architectures sélectionnées: {', '.join([s.split()[0] for s in selected])}", C.CYAN)
+
         # Assure que garble trouve Go 1.26+
         _base_env = os.environ.copy()
         _go_bin_dir = '/usr/local/go/bin'
