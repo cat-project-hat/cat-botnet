@@ -75,7 +75,8 @@ def run(cmd: list, capture=False) -> tuple[int, str]:
         return 127, f"not found: {cmd[0]}"
 
 # ─── Global Go binary path ────────────────────────────────────────────────────
-_GO_BIN = shutil.which('go') or 'go'
+# Force /usr/local/go/bin/go (Go 1.26+) si disponible, sinon cherche dans PATH
+_GO_BIN = '/usr/local/go/bin/go' if Path('/usr/local/go/bin/go').exists() else (shutil.which('go') or 'go')
 
 # ─── Dependency check ────────────────────────────────────────────────────────
 
@@ -91,13 +92,15 @@ def check_and_install_deps():
         return shutil.which(cmd) is not None
 
     # ── Go ──────────────────────────────────────────────────────────────────
-    if not _have('go'):
+    # Cherche Go en priorité dans /usr/local/go/bin (Go 1.26+)
+    _go_found = Path('/usr/local/go/bin/go').exists() or _have('go')
+    if not _go_found:
         cprint("  [!] go introuvable — installation requise.", C.RED)
         if is_linux:
             cprint("  [~] Tentative d'installation de golang-go via apt...", C.YELLOW)
             rc = subprocess.run(['sudo', 'apt-get', 'install', '-y', 'golang-go'],
                                 capture_output=True).returncode
-            if rc == 0 and _have('go'):
+            if rc == 0 and (Path('/usr/local/go/bin/go').exists() or _have('go')):
                 cprint("  [+] go installé ✓", C.GREEN)
             else:
                 cprint("  [!] Impossible d'installer go automatiquement.", C.RED)
