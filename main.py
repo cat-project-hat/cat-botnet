@@ -228,14 +228,18 @@ def strip_elf_sections(path: str) -> bool:
         for s in _ELF_SECTIONS_TO_STRIP:
             args += ['--remove-section', s]
         args.append(path)
-        r = subprocess.run(args, capture_output=True)
+        r = subprocess.run(args, capture_output=True, text=True)
         if r.returncode == 0:
-            cprint(f"      ↳ anti-reverse : fait ✓", C.GREEN)
+            cprint(f"      ↳ anti-reverse : objcopy ✓", C.GREEN)
             return True
+        else:
+            pass  # Essaie la prochaine méthode
+
+    # Méthode 2 : strip
     if strip:
-        r = subprocess.run([strip, '--strip-all', path], capture_output=True)
+        r = subprocess.run([strip, '--strip-all', path], capture_output=True, text=True)
         if r.returncode == 0:
-            cprint(f"      ↳ anti-reverse : fait ✓", C.GREEN)
+            cprint(f"      ↳ anti-reverse : strip ✓", C.GREEN)
             return True
     # Méthode 3 : patch Python minimal — met à zéro les noms de sections dans
     # le SHT (section header table) pour dérouter les parseurs ELF.
@@ -287,8 +291,8 @@ def strip_elf_sections(path: str) -> bool:
         p.write_bytes(bytes(data))
         cprint(f"      ↳ anti-reverse : fait ✓", C.GREEN)
         return True
-    except Exception:
-        cprint(f"      ↳ anti-reverse : erreur", C.RED)
+    except Exception as e:
+        cprint(f"      ↳ anti-reverse : erreur ({type(e).__name__}: {str(e)[:50]})", C.RED)
         return False
 
 # ─── Token obfuscation ────────────────────────────────────────────────────────
