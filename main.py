@@ -67,9 +67,9 @@ def sep():
 def st(on: bool) -> str:
     return f"{C.GREEN}ON{C.RESET}" if on else f"{C.RED}OFF{C.RESET}"
 
-def run(cmd: list, capture=False) -> tuple[int, str]:
+def run(cmd: list, capture=False, env=None) -> tuple[int, str]:
     try:
-        r = subprocess.run(cmd, capture_output=capture, text=True)
+        r = subprocess.run(cmd, capture_output=capture, text=True, env=env)
         return r.returncode, (r.stdout + r.stderr) if capture else ''
     except FileNotFoundError:
         return 127, f"not found: {cmd[0]}"
@@ -1227,9 +1227,16 @@ class Builder:
                     patched_f, count=1
                 )
             Path('fiber.go').write_text(patched_f)
-        _fiber_go = _garble_bin if _garble else 'go'
+        _fiber_go = _garble_bin if _garble else _GO_BIN
         _fiber_args = ['-literals', '-tiny', '-seed=random'] if _garble else []
-        code, out = run([_fiber_go] + _fiber_args + ['build', f'-ldflags={fiber_ldf} -buildid='] + _trimpath_flag + ['-o', 'fiber', 'fiber.go'], capture=True)
+        # Garble appelle `go` en interne — s'assurer que /usr/local/go/bin est dans PATH
+        _fiber_env = os.environ.copy()
+        _go_dir = str(Path(_GO_BIN).parent)
+        if _go_dir not in _fiber_env.get('PATH', ''):
+            _fiber_env['PATH'] = _go_dir + ':' + _fiber_env.get('PATH', '')
+        _fiber_env['GOROOT'] = str(Path(_GO_BIN).parent.parent)
+        _fiber_env['CGO_ENABLED'] = '0'
+        code, out = run([_fiber_go] + _fiber_args + ['build', f'-ldflags={fiber_ldf} -buildid='] + _trimpath_flag + ['-o', 'fiber', 'fiber.go'], capture=True, env=_fiber_env)
         if code == 0:
             cprint("  [+] fiber compilé ✓ (URLs des binaires embedded)", C.GREEN)
             strip_elf_sections('fiber')
