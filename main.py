@@ -222,6 +222,11 @@ def strip_elf_sections(path: str) -> bool:
                or shutil.which('llvm-objcopy')
                or shutil.which('objcopy'))
     strip   = shutil.which('strip')
+
+    # Si rien n'est dispo, skip avec warning
+    if not objcopy and not strip:
+        cprint(f"      ↳ anti-reverse : skipped (objcopy/strip absent)", C.YELLOW)
+        return True  # Pas d'erreur, juste skip
     # Méthode 1 : objcopy (GNU binutils ou llvm)
     if objcopy:
         args = [objcopy]
@@ -1225,30 +1230,37 @@ class Builder:
 
         # ── Nettoyage des binaires uploadés (libère l'espace disque) ────────
         if self.cfg.distrib_mode == 'auto' and to_upload:
-            cprint(f"\n  {C.YELLOW}── Nettoyage binaires uploadés ──{C.RESET}")
-            cleaned_bytes = 0
-            for _, binary in to_upload:
-                try:
-                    p = Path(binary)
-                    if p.exists():
-                        sz = p.stat().st_size
-                        p.unlink()
-                        cleaned_bytes += sz
-                        cprint(f"  {C.YELLOW}[~]{C.RESET} Supprimé {binary} ({sz // 1024} KB)", C.RESET)
-                except Exception:
-                    pass
-            # Supprimer aussi les répertoires build/ s'ils sont vides
-            for d in [LEGACY_DIR, BUILD_DIR]:
-                try:
-                    dp = Path(d)
-                    if dp.exists() and not any(dp.iterdir()):
-                        dp.rmdir()
-                except Exception:
-                    pass
-            if cleaned_bytes:
-                cprint(f"  {C.GREEN}[+] {cleaned_bytes // 1024} KB libérés ✓{C.RESET}", C.GREEN)
+            # Demander si l'utilisateur veut garder les binaires
+            keep = cinput(f"\n  > Garder les binaires compilés dans build/ ? [o/N] : ", C.YELLOW).strip().lower() == 'o'
+
+            if not keep:
+                cprint(f"\n  {C.YELLOW}── Nettoyage binaires uploadés ──{C.RESET}")
+                cleaned_bytes = 0
+                for _, binary in to_upload:
+                    try:
+                        p = Path(binary)
+                        if p.exists():
+                            sz = p.stat().st_size
+                            p.unlink()
+                            cleaned_bytes += sz
+                            cprint(f"  {C.YELLOW}[~]{C.RESET} Supprimé {binary} ({sz // 1024} KB)", C.RESET)
+                    except Exception:
+                        pass
+                # Supprimer aussi les répertoires build/ s'ils sont vides
+                for d in [LEGACY_DIR, BUILD_DIR]:
+                    try:
+                        dp = Path(d)
+                        if dp.exists() and not any(dp.iterdir()):
+                            dp.rmdir()
+                    except Exception:
+                        pass
+                if cleaned_bytes:
+                    cprint(f"  {C.GREEN}[+] {cleaned_bytes // 1024} KB libérés ✓{C.RESET}", C.GREEN)
+                else:
+                    cprint(f"  {C.YELLOW}[~] Rien à nettoyer{C.RESET}", C.YELLOW)
             else:
-                cprint(f"  {C.YELLOW}[~] Rien à nettoyer{C.RESET}", C.YELLOW)
+                sz_total = sum(Path(b).stat().st_size for _, b in to_upload if Path(b).exists())
+                cprint(f"  {C.GREEN}[+] Binaires conservés ({sz_total // 1024} KB){C.RESET}", C.GREEN)
 
         cinput("\n  > Entrée pour continuer...")
 
