@@ -1,25 +1,4 @@
-```
-   ██████╗ █████╗ ████████╗███╗   ██╗███████╗████████╗
-  ██╔════╝██╔══██╗╚══██╔══╝████╗  ██║██╔════╝╚══██╔══╝
-  ██║     ███████║   ██║   ██╔██╗ ██║█████╗     ██║
-  ██║     ██╔══██║   ██║   ██║╚██╗██║██╔══╝     ██║
-  ╚██████╗██║  ██║   ██║   ██║ ╚████║███████╗   ██║
-   ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝
-```
-
-```
-      /\_/\
-     ( o.o )  ~ nyaa ~
-      > ^ <
-     /|   |\
-    (_|   |_)
-```
-
-# CatNet
-
-**`[ BY CAT-PROJECT-HAT // v2.0 // 2026 ]`**
-
-*Scanner IoT educatif — Multi-archi — MikroTik — Mēris Takeover*
+<img src="assets/banner.svg" width="100%" alt="CatNet banner"/>
 
 ![Python](https://img.shields.io/badge/Python-3.10+-green?style=for-the-badge&logo=python&logoColor=white)
 ![Go](https://img.shields.io/badge/Scanner-Go-00ADD8?style=for-the-badge&logo=go&logoColor=white)
