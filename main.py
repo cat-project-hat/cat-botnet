@@ -347,7 +347,7 @@ class Config:
     # 'local'  = fiber sert les fichiers lui-même (besoin IP + port + portmap)
     distrib_mode: str  = 'auto'
     upload_host:  str  = 'catbox.moe'  # hébergeur primaire (catbox.moe / transfer.sh / 0x0.st)
-    self_host_url: str = ''  # ex: https://heb.robbhabbo.online — mis en 1er si défini
+    self_host_url: str = ''  # ex: https://your-server.com — mis en 1er si défini
     # Serveur C2 / HTTP (uniquement si distrib_mode = 'local')
     c2_host:      str  = ''
     c2_http_port: str  = '80'
@@ -633,7 +633,7 @@ class Builder:
                     if v.isdigit(): self.cfg.scan_rate = int(v); self.cfg.save()
                 case 'h':
                     if self.cfg.distrib_mode == 'auto':
-                        cprint("  URL de ton serveur perso (ex: https://heb.robbhabbo.online)", C.WHITE)
+                        cprint("  URL de ton serveur perso (ex: https://your-server.com)", C.WHITE)
                         cprint("  Laisser vide pour désactiver.", C.WHITE)
                         v = cinput("  > URL : ", C.WHITE).strip().rstrip('/')
                         self.cfg.self_host_url = v; self.cfg.save()
@@ -1404,7 +1404,7 @@ class Builder:
             return out if out.startswith('http') else ''
 
         def upload_selfhost(f: str) -> str:
-            # Serveur perso (heb.robbhabbo.online) — POST multipart → {"success":true,"url":"..."}
+            # Serveur perso — POST multipart → {"success":true,"url":"..."}
             if not self.cfg.self_host_url:
                 return ''
             base = self.cfg.self_host_url.rstrip('/')

